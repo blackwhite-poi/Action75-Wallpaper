@@ -38,6 +38,8 @@ use ui_chrome::Icon;
 
 // Keep the existing local directory for eframe's window settings.
 const EFRAME_APP_ID: &str = "ACTION75";
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [1380., 880.];
+const MIN_WINDOW_SIZE: [f32; 2] = [1080., 680.];
 
 const PERFORMANCE_TAB: u8 = 4;
 const NAVIGATION: [(u8, &str, Icon); 5] = [
@@ -82,7 +84,7 @@ fn main() -> eframe::Result {
     let mut handoff_token = None;
     let mut check = false;
     let mut screenshot: Option<PathBuf> = None;
-    let mut initial_size = [1380., 880.];
+    let mut initial_size = None;
     let mut screenshot_tab = None;
     let mut exit_after_screenshot = false;
     let mut args = std::env::args().skip(1);
@@ -96,7 +98,7 @@ fn main() -> eframe::Result {
             "--screenshot-size" => {
                 if let (Some(w), Some(h)) = (args.next(), args.next()) {
                     if let (Ok(w), Ok(h)) = (w.parse::<f32>(), h.parse::<f32>()) {
-                        initial_size = [w, h];
+                        initial_size = Some([w, h]);
                     }
                 }
             }
@@ -204,8 +206,8 @@ fn main() -> eframe::Result {
             .with_icon(app_icon)
             .with_decorations(false)
             .with_active(!background)
-            .with_inner_size(initial_size)
-            .with_min_inner_size([1080., 680.]),
+            .with_inner_size(initial_size.unwrap_or(DEFAULT_WINDOW_SIZE))
+            .with_min_inner_size(MIN_WINDOW_SIZE),
         ..Default::default()
     };
     let restart_on_exit = Rc::new(Cell::new(Restart::None));
@@ -271,9 +273,22 @@ fn main() -> eframe::Result {
         }
         Ok(Box::new(manager))
     };
+    // Apply the hook to each launch option after cloning.
+    let with_startup_size = |mut options: eframe::NativeOptions| {
+        if initial_size.is_none() {
+            options.window_builder = Some(Box::new(|viewport| {
+                if primary_display_has_double_scale() {
+                    viewport.with_inner_size(MIN_WINDOW_SIZE)
+                } else {
+                    viewport
+                }
+            }));
+        }
+        options
+    };
     let result = eframe::run_native(
         EFRAME_APP_ID,
-        options.clone(),
+        with_startup_size(options.clone()),
         Box::new(|cc| create_manager(cc)),
     );
     match result {
@@ -283,6 +298,7 @@ fn main() -> eframe::Result {
                 "WARN",
                 &format!("DirectX 12 初始化失败，改用 OpenGL。{error}"),
             );
+            options = with_startup_size(options);
             options.renderer = eframe::Renderer::Glow;
             eframe::run_native(EFRAME_APP_ID, options, Box::new(|cc| create_manager(cc)))
         }
@@ -4672,4 +4688,17 @@ mod calibration_lock_tests {
             matches!(jobs.try_recv().unwrap(),Job::SelectPack{id,..} if id=="another-wallpaper")
         );
     }
+}
+
+fn primary_display_has_double_scale() -> bool {
+    use windows::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint},
+        UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+    };
+
+    // The window builder calls this after winit has made the process DPI-aware.
+    let monitor = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
+    let (mut x, mut y) = (0, 0);
+    unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y) }.is_ok() && x == 2 * 96
 }
