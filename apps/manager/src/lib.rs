@@ -1328,7 +1328,12 @@ fn configure_first_run(
     if applied["selectedKeyboardDevices"].as_u64() == Some(0) {
         return Err("所选键盘已断开，请连接后刷新设备，或选择其他键盘。".into());
     }
-    request(json!({"action":"selectPack","id":"paintball-native"}))?;
+    if applied["packId"].as_str().is_none_or(str::is_empty)
+        && request(json!({"action":"selectPack","id":"paintball-native"})).is_err()
+    {
+        // A missing default wallpaper must still allow access to the library.
+        let _ = request(json!({"action":"selectPack","id":"black-hole"}));
+    }
     request(json!({"action":"show"}))?;
     Ok(())
 }
@@ -1789,6 +1794,31 @@ pub fn atomic_replace(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_preserves_playback_and_can_finish_without_default_wallpapers() {
+        for active in ["black-hole", ""] {
+            let mut actions = Vec::new();
+            configure_first_run("display", Some("identity"), "keyboard", |request| {
+                let action = request["action"].as_str().unwrap().to_owned();
+                let result = match action.as_str() {
+                    "setSettings" => Ok(json!({"selectedKeyboardDevices": 1, "packId": active})),
+                    "selectPack" => Err("missing bundled wallpaper".into()),
+                    "show" => Ok(Value::Null),
+                    _ => panic!("unexpected request"),
+                };
+                actions.push(action);
+                result
+            })
+            .unwrap();
+            let expected: &[&str] = if active.is_empty() {
+                &["setSettings", "selectPack", "selectPack", "show"]
+            } else {
+                &["setSettings", "show"]
+            };
+            assert_eq!(actions, expected);
+        }
+    }
 
     #[test]
     fn failed_ordinary_worker_request_is_not_an_unrelated_operation_completion() {

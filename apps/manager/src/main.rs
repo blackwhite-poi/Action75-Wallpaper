@@ -1006,6 +1006,10 @@ impl Manager {
                 Event::Error(error) | Event::RequestFailed(error) => self.error = error,
                 Event::SetupFinished(result) => {
                     self.selecting = false;
+                    if result.is_ok() {
+                        self.setup_complete = true;
+                        self.preferences.setup_complete = true;
+                    }
                     self.error = result.err().unwrap_or_default();
                 }
                 Event::MigrationFinished(result) => {
@@ -2731,11 +2735,18 @@ impl Manager {
             {
                 self.selecting = true;
                 self.error.clear();
-                let _ = self.tx.send(Job::Setup {
-                    monitor: monitor["device"].as_str().unwrap_or_default().to_owned(),
-                    monitor_identity: monitor["monitorIdentity"].as_str().map(str::to_owned),
-                    device: self.setup_device.clone(),
-                });
+                if self
+                    .tx
+                    .send(Job::Setup {
+                        monitor: monitor["device"].as_str().unwrap_or_default().to_owned(),
+                        monitor_identity: monitor["monitorIdentity"].as_str().map(str::to_owned),
+                        device: self.setup_device.clone(),
+                    })
+                    .is_err()
+                {
+                    self.selecting = false;
+                    self.error = "控制线程已退出".into();
+                }
             }
             if !self.error.is_empty() {
                 ui.colored_label(ui.visuals().error_fg_color, &self.error);
