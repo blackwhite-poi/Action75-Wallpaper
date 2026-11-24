@@ -23,6 +23,7 @@
 #include "RawKeyboard.h"
 #include "RuntimeIdentity.h"
 #include "SpriteBurst.h"
+#include "TrayMenu.h"
 #include "WallpaperCatalog.h"
 #include "WaterSurface.h"
 #include <algorithm>
@@ -646,6 +647,7 @@ private:
   DisplayGuard displayGuard_;
   KeyboardTaskbar keyboardTaskbar_;
   NOTIFYICONDATAW tray_{};
+  TrayMenu *activeTrayMenu_ = nullptr;
   bool exitShortcut_ = false, quittingSession_ = false;
   UINT taskbarCreated_ = 0;
   HICON icon_ = nullptr;
@@ -2585,34 +2587,49 @@ LRESULT Player::message(HWND h, UINT m, WPARAM w, LPARAM l) {
   case WM_NCDESTROY:
     RemovePropW(h, L"NonRudeHWND");
     break;
+  case WM_MEASUREITEM:
+    if (activeTrayMenu_ && l && activeTrayMenu_->measure(*reinterpret_cast<MEASUREITEMSTRUCT *>(l)))
+      return TRUE;
+    break;
+  case WM_DRAWITEM:
+    if (activeTrayMenu_ && l && activeTrayMenu_->draw(*reinterpret_cast<const DRAWITEMSTRUCT *>(l)))
+      return TRUE;
+    break;
   case TrayMessage:
     if (l == WM_LBUTTONDBLCLK) {
       openManager();
       return 0;
     }
     if (l == WM_RBUTTONUP) {
-      POINT point;
-      GetCursorPos(&point);
-      HMENU menu = CreatePopupMenu();
-      AppendMenuW(menu, MF_STRING, 1, L"打开主界面");
+      if (activeTrayMenu_) return 0;
+      POINT point{};
+      if (!GetCursorPos(&point)) return 0;
+      std::optional<bool> graphite;
+      try {
+        const auto theme = readJson(options_.root / L"data/app-settings.json").value("theme", std::string{});
+        if (theme == "graphite" || theme == "paper") graphite = theme == "graphite";
+      } catch (const std::exception &) {
+        // An unconfigured manager leaves the tray on the system theme.
+      }
+      TrayMenu appearance(point, graphite);
+      const HMENU menu = appearance.root();
+      if (!menu) return 0;
+      appearance.append(menu, 1, L"打开主界面");
       const bool resumeInteraction = temporaryPauseOwner_ ? persistedPaused_ : paused_;
-      AppendMenuW(menu, MF_STRING, 2, resumeInteraction ? L"恢复互动" : L"暂停互动");
-      AppendMenuW(menu, MF_STRING, 3, visible_ ? L"隐藏副屏" : L"显示副屏");
-      // Switching existing wallpaper packs needs no Electron process.
+      appearance.append(menu, 2, resumeInteraction ? L"恢复互动" : L"暂停互动");
+      appearance.append(menu, 3, visible_ ? L"隐藏副屏" : L"显示副屏");
       std::vector<std::string> packChoices;
-      HMENU themes = CreatePopupMenu();
+      const HMENU themes = appearance.createPopup();
       if (themes) {
         for (const auto &p : packs_) {
           if (!p.supported || packChoices.size() >= 20)
             continue;
-          const auto name = wide(p.name);
           const UINT id = static_cast<UINT>(100 + packChoices.size());
-          AppendMenuW(themes, MF_STRING | (p.id == packId_ ? MF_CHECKED : MF_UNCHECKED), id,
-                      name.c_str());
-          packChoices.push_back(p.id);
+          if (appearance.append(themes, id, wide(p.name), p.id == packId_))
+            packChoices.push_back(p.id);
         }
         if (packChoices.empty() ||
-            !AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(themes), L"互动壁纸"))
+            !appearance.append(menu, 0, L"互动壁纸", false, themes))
           DestroyMenu(themes);
       }
       HKEY runKey = nullptr;
@@ -2623,13 +2640,25 @@ LRESULT Player::message(HWND h, UINT m, WPARAM w, LPARAM l) {
                     ERROR_SUCCESS;
         RegCloseKey(runKey);
       }
-      AppendMenuW(menu, MF_STRING | (autostart ? MF_CHECKED : MF_UNCHECKED), 24, L"开机运行");
+      appearance.append(menu, 24, L"开机运行", autostart);
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-      AppendMenuW(menu, MF_STRING, 4, L"退出");
-      SetForegroundWindow(h);
-      UINT choice =
-          TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, point.x, point.y, 0, h, nullptr);
-      DestroyMenu(menu);
+      appearance.append(menu, 4, L"退出");
+      activeTrayMenu_ = &appearance;
+      const auto customChoice = appearance.show(h, point);
+      UINT choice = 0;
+      if (customChoice) {
+        choice = *customChoice;
+        diagnostics_.write("INFO", "Action75 tray popup closed");
+      } else {
+        SetForegroundWindow(h);
+        if (const auto popup = appearance.popupAnchor()) {
+          choice = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_RIGHTALIGN,
+                                  popup->x, popup->y, 0, h, nullptr);
+        } else {
+          choice = TrackPopupMenu(menu, TPM_RETURNCMD, point.x, point.y, 0, h, nullptr);
+        }
+      }
+      activeTrayMenu_ = nullptr;
       if (choice == 1)
         openManager();
       else if (choice == 2)
