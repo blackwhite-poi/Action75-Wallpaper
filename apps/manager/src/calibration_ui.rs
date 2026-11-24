@@ -863,7 +863,7 @@ impl Controller {
                 ui.set_width(358.);
                 ui.label(RichText::new("根据现有数据拟合键位？").size(20.));
                 ui.add_space(4.);
-                ui.label("用当前点位拟合参考布局，再对齐原有范围。");
+                ui.label("按 Action75 的键帽排列微调当前校准点。");
                 ui.label(RichText::new("部分点位可能移动。可预览、撤销，保存后生效。").weak());
                 ui.add_space(10.);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -885,13 +885,11 @@ impl Controller {
     }
 
     fn fit(&mut self, ctx: &egui::Context) {
-        let reference = Calibration::layout_points(&self.root);
         let mut s = self.state.lock().unwrap();
         let Some(model) = s.preview_model() else {
             return;
         };
-        match reference.and_then(|reference| core::calibration_fit::fit(&model.points, &reference))
-        {
+        match core::calibration_fit::fit(&model.points, &preview::fit_reference()) {
             Ok(points) => {
                 s.error.clear();
                 if let Some(session) = &mut s.session {
@@ -1098,7 +1096,7 @@ fn show_fit_controls(
         });
     } else {
         ui.label(
-            RichText::new("对参考布局做最小二乘仿射拟合。\n规整键距与排列，保留整体范围。")
+            RichText::new("参考 Action75 的键帽布局，微调键距和排列。")
                 .size(13.)
                 .weak(),
         );
@@ -1341,6 +1339,8 @@ fn key_label(code: &str) -> &str {
             "ShiftLeft" | "ShiftRight" => "Shift",
             "AltLeft" | "AltRight" => "Alt",
             "MetaLeft" => "Win",
+            // Legacy calibration files store the physical ScrLk position as Insert.
+            "Insert" | "ScrollLock" => "ScrLk",
             "ArrowUp" => "↑",
             "ArrowDown" => "↓",
             "ArrowLeft" => "←",
@@ -2202,21 +2202,43 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let prepared = prepared();
-        let keys: Vec<_> = prepared
-            .defaults
-            .iter()
-            .map(|(code, p)| json!({"code":code,"x":p.x*1920.,"y":p.y*555.}))
-            .collect();
         std::fs::create_dir_all(root.join("existing-resources/finalmouse")).unwrap();
         std::fs::write(
             root.join("existing-resources/finalmouse/action75-ue-keymap.json"),
-            serde_json::to_vec(&json!({"coordinateSpace":[1920,555],"keys":keys})).unwrap(),
+            include_bytes!("../../../existing-resources/finalmouse/action75-ue-keymap.json"),
         )
         .unwrap();
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/fm-calibration.json"), b"original-on-disk").unwrap();
         root
+    }
+
+    fn fit_session() -> Session {
+        let mut prepared = prepared();
+        let points = preview::fit_reference();
+        let order = points.keys().cloned().collect();
+        prepared.model = Calibration::from_points(json!({"revision":"before"}), points, order);
+        prepared.defaults = prepared.model.points.clone();
+        Session::new(prepared)
+    }
+
+    #[test]
+    fn action75_fit_preserves_the_calibrated_navigation_key_positions() {
+        let document: Value =
+            serde_json::from_str(include_str!("../../../assets/defaults/fm-calibration.json"))
+                .unwrap();
+        let current: BTreeMap<String, Point> =
+            serde_json::from_value(document["points"].clone()).unwrap();
+        let reference = preview::fit_reference();
+        let fitted = core::calibration_fit::fit(&current, &reference).unwrap();
+        assert_eq!(fitted.len(), 83);
+        for (code, point) in &fitted {
+            let original = current[code];
+            let dx = (point.x - original.x) * 1920.;
+            let dy = (point.y - original.y) * 720.;
+            assert!(dx.hypot(dy) < 10., "{code} moved ({dx}, {dy}) pixels");
+        }
+        assert_eq!(key_label("Insert"), "ScrLk");
     }
 
     fn modal_click(ctx: &egui::Context, c: &mut Controller, label: &str) {
@@ -2240,19 +2262,13 @@ mod tests {
     fn fit_requires_confirmation_is_preview_only_and_undoable() {
         let root = fit_fixture();
         let mut controller = Controller::new(root.clone());
-        controller.test_set_active(true);
-        controller
-            .state
-            .lock()
-            .unwrap()
-            .session
-            .as_mut()
-            .unwrap()
-            .model
-            .points
-            .get_mut("Key3")
-            .unwrap()
-            .y += 0.03;
+        {
+            let mut state = controller.state.lock().unwrap();
+            let mut session = fit_session();
+            session.model.points.get_mut("KeyA").unwrap().y += 0.03;
+            state.phase = Phase::Active;
+            state.session = Some(session);
+        }
         let before = controller
             .state
             .lock()
@@ -2312,14 +2328,11 @@ mod tests {
         let root = fit_fixture();
         let (mut c, jobs, replies) = fixture();
         c.root = root.clone();
-        c.state
-            .lock()
-            .unwrap()
-            .session
-            .as_mut()
-            .unwrap()
-            .model
-            .move_point("Key3", 0.045, 0.11);
+        {
+            let mut session = fit_session();
+            session.model.points.get_mut("KeyA").unwrap().y += 0.03;
+            c.state.lock().unwrap().session = Some(session);
+        }
 
         let ctx = egui::Context::default();
         click_control(&ctx, &mut c, "保存并结束");
@@ -2334,7 +2347,7 @@ mod tests {
         c.poll(&ctx);
         assert!(!c.has_session());
 
-        let reference = Calibration::layout_points(&root).unwrap();
+        let reference = preview::fit_reference();
         let expected = core::calibration_fit::fit(&manual.points, &reference).unwrap();
         assert_ne!(expected, manual.points);
         click_control(&ctx, &mut c, "拟合键位");

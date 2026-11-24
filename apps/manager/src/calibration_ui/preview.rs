@@ -6,6 +6,7 @@ use eframe::egui::{
     StrokeKind, emath::RectTransform, pos2, vec2,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const PANEL_WIDTH: i32 = 1920;
@@ -50,6 +51,23 @@ fn action75_keycaps() -> &'static [Keycap] {
             .expect("valid bundled Action75 keycap layout")
         })
         .keys
+}
+
+pub(super) fn fit_reference() -> BTreeMap<String, Point> {
+    action75_keycaps()
+        .iter()
+        .filter(|key| key.code != "Fn")
+        .map(|key| {
+            let bounds = &key.bounds;
+            let center = Point {
+                x: (f64::from(bounds.left) + f64::from(bounds.right))
+                    / (2. * f64::from(PANEL_WIDTH)),
+                y: (f64::from(bounds.top) + f64::from(bounds.bottom))
+                    / (2. * f64::from(PANEL_HEIGHT)),
+            };
+            (key.code.clone(), center)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -423,7 +441,6 @@ fn label(code: &str) -> &str {
     match code {
         "Escape" => "Esc",
         "PrintScreen" => "PrtSc",
-        "Insert" => "Ins",
         "Delete" => "Del",
         "Backspace" => "Bksp",
         "CapsLock" => "Caps",

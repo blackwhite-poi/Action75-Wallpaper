@@ -1,4 +1,4 @@
-//! Fit the reference key arrangement to measured points, preserving their bounds.
+//! Fit the hardware key arrangement to measured points in display coordinates.
 use crate::Point;
 use std::collections::BTreeMap;
 
@@ -89,13 +89,14 @@ pub fn fit(
         if hi - lo < 1e-9 || fh - fl < 1e-9 {
             return Err("校准范围过小".into());
         }
-        for p in fitted.values_mut() {
-            let v = lo + (value(p) - fl) / (fh - fl) * (hi - lo);
-            if axis == 0 {
-                p.x = v;
-            } else {
-                p.y = v;
-            }
+    }
+    for (code, point) in &mut fitted {
+        point.x = point.x.clamp(0., 1.);
+        point.y = point.y.clamp(0., 1.);
+        let original = current[code];
+        // Avoid a save preview when the fit only changes floating-point noise.
+        if (point.x - original.x).abs() < 1e-10 && (point.y - original.y).abs() < 1e-10 {
+            *point = original;
         }
     }
     Ok(fitted)
@@ -105,7 +106,7 @@ pub fn fit(
 mod tests {
     use super::*;
     #[test]
-    fn regularizes_noisy_rows_preserves_bounds_and_special_key_spacing() {
+    fn regularizes_noisy_rows_without_rescaling_the_fit_to_outliers() {
         let reference: BTreeMap<_, _> = (0..24)
             .map(|i| {
                 (
@@ -131,20 +132,18 @@ mod tests {
             })
             .collect();
         let result = fit(&current, &reference).unwrap();
-        for axis in 0..2 {
-            let get = |p: &Point| if axis == 0 { p.x } else { p.y };
-            let extent = |m: &BTreeMap<String, Point>| {
-                m.values()
-                    .map(get)
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
-                        (a.min(v), b.max(v))
-                    })
-            };
-            let (a, b) = extent(&current);
-            let (c, d) = extent(&result);
-            assert!((a - c).abs() < 1e-12 && (b - d).abs() < 1e-12);
-        }
-        assert_eq!(fit(&current, &reference).unwrap(), result);
+        let error = |points: &BTreeMap<String, Point>| {
+            reference
+                .iter()
+                .map(|(code, p)| {
+                    let actual = points[code];
+                    (actual.x - (0.1 + p.x * 0.7)).powi(2)
+                        + (actual.y - (0.2 + p.y * 0.5)).powi(2)
+                })
+                .sum::<f64>()
+        };
+        assert!(error(&result) < error(&current));
+        assert_eq!(fit(&result, &reference).unwrap(), result);
         assert_ne!(current, result);
     }
     #[test]
