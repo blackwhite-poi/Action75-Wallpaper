@@ -5,8 +5,10 @@
 #endif
 #include <Windows.h>
 #include "PlayerConfig.h"
+#include <array>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +54,9 @@ private:
 class KeyboardState {
 public:
     bool transition(std::uintptr_t device, std::uint16_t usage, bool down);
+    bool held(std::uint16_t usage) const;
+    bool heldWithout(std::uintptr_t device, std::uint16_t usage) const;
+    bool releaseUsage(std::uint16_t usage);
     std::vector<std::uint16_t> removeDevice(std::uintptr_t device);
     std::vector<std::uint16_t> clear();
 private:
@@ -61,12 +66,14 @@ private:
 
 // Construct, attach, process and setConfig on the window's message-loop thread.
 // The owner must still call DefWindowProc for WM_INPUT foreground cleanup.
+class ShortcutHook;
 class RawKeyboard {
 public:
     // Aggregate diagnostics only; no key values, text, or event history.
     struct Diagnostics {
         std::uint64_t packets = 0, selectedPackets = 0, readErrors = 0;
         std::uint64_t downEvents = 0, upEvents = 0, lastPacketMs = 0;
+        std::uint64_t shortcutDownEvents = 0, recoveredAltReleases = 0;
     };
     using Callback = std::function<void(const KeyEvent&)>;
     using Devices = std::optional<std::vector<KeyboardDevice>>;
@@ -86,10 +93,36 @@ public:
     const Diagnostics& diagnostics() const noexcept { return diagnostics_; }
     std::size_t selectedDeviceCount() const noexcept { return selected_.size(); }
     bool registered() const noexcept { return window_ != nullptr; }
+    bool shortcutHookActive() const noexcept { return shortcutHook_ != nullptr; }
 private:
     void release(std::uint16_t usage);
     void emit(const KeyMapping& key, bool down);
     void releaseAll();
+    void routeKey(std::uintptr_t device, const KeyMapping& key, bool down, DWORD time);
+    void updateShortcut();
+    void processShortcut(std::uint16_t usage, bool down, DWORD time);
+    void updateAltTimer();
+    struct ShortcutStart {
+        std::optional<DWORD> raw;
+        std::optional<DWORD> hook;
+    };
+    struct ShortcutKey {
+        std::uint16_t usage;
+        bool down;
+        DWORD time;
+    };
+    struct RoutedEdge {
+        ShortcutKey edge{};
+        bool byHook = false;
+        bool pending = false;
+    };
+    std::array<ShortcutStart, 6> shortcutStarts_;
+    std::vector<ShortcutKey> pendingShortcut_;
+    std::array<RoutedEdge, 32> recentEdges_{};
+    std::size_t nextEdge_ = 0;
+    std::unique_ptr<ShortcutHook> shortcutHook_;
+    bool shortcutMatched_ = false;
+    bool altTimer_ = false;
     void processFnReports(HANDLE device, const std::uint8_t* payload, std::size_t size);
     PlayerConfig config_;
     Callback callback_;

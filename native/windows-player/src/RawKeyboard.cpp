@@ -3,11 +3,36 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <future>
+#include <system_error>
+#include <thread>
 #include <cwctype>
 #include <utility>
 
 namespace action75 {
 namespace {
+
+constexpr std::uint16_t LeftAltUsage = 226;
+// Left/right Ctrl, Alt and Win are tracked separately for device matching.
+constexpr std::array<std::uint16_t, 6> ShortcutModifiers{224, 228, 226, 230, 227, 231};
+constexpr std::uintptr_t ShortcutSource = 0; // Raw Input device handles are nonzero.
+constexpr UINT ShortcutMessage = WM_APP + 0x75;
+constexpr UINT_PTR AltReleaseTimer = 0xA75;
+constexpr DWORD AltReleasePollMs = 16;
+constexpr LONG ShortcutMatchMs = 50;
+constexpr LONG DuplicateEdgeMs = 16;
+constexpr char Action75Group[] = "VID_1CA6&PID_1A0B";
+
+std::optional<size_t> shortcutModifier(std::uint16_t usage) {
+    const auto found = std::find(ShortcutModifiers.begin(), ShortcutModifiers.end(), usage);
+    if (found == ShortcutModifiers.end()) return std::nullopt;
+    return static_cast<size_t>(found - ShortcutModifiers.begin());
+}
+
+bool closeInputTimes(DWORD a, DWORD b, LONG tolerance = ShortcutMatchMs) {
+    const auto delta = static_cast<LONG>(a - b);
+    return delta >= -tolerance && delta <= tolerance;
+}
 
 struct ScanEntry { std::uint16_t scan; const char* code; std::uint16_t usage; };
 constexpr ScanEntry normal[] = {
@@ -118,6 +143,28 @@ bool KeyboardState::transition(std::uintptr_t device, std::uint16_t usage, bool 
     return true;
 }
 
+bool KeyboardState::held(std::uint16_t usage) const {
+    return counts_.find(usage) != counts_.end();
+}
+
+bool KeyboardState::heldWithout(std::uintptr_t device, std::uint16_t usage) const {
+    const auto count = counts_.find(usage);
+    if (count == counts_.end()) return false;
+    const auto excluded = held_.find(device);
+    const bool heldByExcluded = excluded != held_.end() && excluded->second.count(usage) != 0;
+    return count->second > unsigned(heldByExcluded);
+}
+
+bool KeyboardState::releaseUsage(std::uint16_t usage) {
+    if (!counts_.erase(usage)) return false;
+    for (auto it = held_.begin(); it != held_.end();) {
+        it->second.erase(usage);
+        if (it->second.empty()) it = held_.erase(it);
+        else ++it;
+    }
+    return true;
+}
+
 std::vector<std::uint16_t> KeyboardState::removeDevice(std::uintptr_t device) {
     std::vector<std::uint16_t> released;
     const auto found = held_.find(device);
@@ -141,6 +188,75 @@ std::vector<std::uint16_t> KeyboardState::clear() {
     counts_.clear();
     return released;
 }
+
+class ShortcutHook {
+public:
+    explicit ShortcutHook(HWND window) : window_(window) {}
+    ~ShortcutHook() {
+        if (!thread_.joinable()) return;
+        if (threadId_) PostThreadMessageW(threadId_, WM_QUIT, 0, 0);
+        thread_.join();
+    }
+
+    bool start() {
+        std::promise<DWORD> ready;
+        auto result = ready.get_future();
+        thread_ = std::thread([this, ready = std::move(ready)]() mutable {
+            MSG message{};
+            PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+            current_ = this;
+            const auto hook = SetWindowsHookExW(WH_KEYBOARD_LL, callback,
+                                                 GetModuleHandleW(nullptr), 0);
+            ready.set_value(hook ? GetCurrentThreadId() : 0);
+            if (!hook) return;
+            while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+                DispatchMessageW(&message);
+            }
+            UnhookWindowsHookEx(hook);
+        });
+        threadId_ = result.get();
+        return threadId_ != 0;
+    }
+
+private:
+    static LRESULT CALLBACK callback(int code, WPARAM wParam, LPARAM lParam) {
+        if (code == HC_ACTION) {
+            const auto& event = *reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+            if ((event.flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED)) == 0)
+                current_->observe(event);
+        }
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    void observe(const KBDLLHOOKSTRUCT& event) {
+        const auto scan = static_cast<std::uint16_t>(event.scanCode);
+        const bool starterScan = scan == 29 || scan == 56 || scan == 91 || scan == 92;
+        if (!starterScan && std::none_of(modifiersHeld_.begin(), modifiersHeld_.end(),
+                                        [](bool held) { return held; }))
+            return;
+        const auto key = translateScan(scan, (event.flags & LLKHF_EXTENDED) != 0, false,
+                                       static_cast<std::uint16_t>(event.vkCode));
+        if (!key) return;
+        const bool down = (event.flags & LLKHF_UP) == 0;
+        if (const auto slot = shortcutModifier(key->usage)) {
+            if (modifiersHeld_[*slot] == down) return;
+            modifiersHeld_[*slot] = down;
+        }
+        post(key->usage, down, event.time);
+    }
+
+    void post(std::uint16_t usage, bool down, DWORD time) {
+        PostMessageW(window_, ShortcutMessage, WPARAM(usage) | (down ? 0x10000u : 0u),
+                     static_cast<LPARAM>(time));
+    }
+
+    static thread_local ShortcutHook* current_;
+    const HWND window_;
+    std::array<bool, ShortcutModifiers.size()> modifiersHeld_{};
+    std::thread thread_;
+    DWORD threadId_ = 0;
+};
+thread_local ShortcutHook* ShortcutHook::current_ = nullptr;
 
 RawKeyboard::RawKeyboard(const PlayerConfig& config, Callback callback, DeviceEnumerator devices)
     : config_(config), callback_(std::move(callback)), enumerateDevices_(std::move(devices)) {}
@@ -187,10 +303,17 @@ bool RawKeyboard::attach(HWND window) {
     window_ = window;
     error_.clear();
     refreshDevices();
+    try {
+        auto hook = std::make_unique<ShortcutHook>(window_);
+        if (hook->start()) shortcutHook_ = std::move(hook);
+    } catch (const std::system_error&) {
+        // Standard Raw Input stays available if a hook thread cannot start.
+    }
     return true;
 }
 
 void RawKeyboard::detach() {
+    shortcutHook_.reset();
     releaseAll();
     if (window_) {
         const RAWINPUTDEVICE devices[] = {
@@ -222,6 +345,7 @@ RawKeyboard::Devices RawKeyboard::refreshDevices() {
             for (const auto usage : state_.removeDevice(handle)) release(usage);
     selected_ = std::move(selected);
     rejected_ = std::move(rejected);
+    updateShortcut();
     return devices;
 }
 
@@ -237,7 +361,107 @@ void RawKeyboard::emit(const KeyMapping& key, bool down) {
 }
 
 void RawKeyboard::releaseAll() {
+    if (altTimer_) KillTimer(window_, AltReleaseTimer);
+    altTimer_ = false;
+    shortcutStarts_ = {};
+    pendingShortcut_.clear();
+    recentEdges_ = {};
+    nextEdge_ = 0;
+    shortcutMatched_ = false;
     for (const auto usage : state_.clear()) release(usage);
+}
+
+void RawKeyboard::updateAltTimer() {
+    const bool held = state_.held(LeftAltUsage);
+    if (held && !altTimer_)
+        altTimer_ = SetTimer(window_, AltReleaseTimer, AltReleasePollMs, nullptr) != 0;
+    else if (!held && altTimer_) {
+        KillTimer(window_, AltReleaseTimer);
+        altTimer_ = false;
+    }
+}
+
+void RawKeyboard::routeKey(std::uintptr_t device, const KeyMapping& key, bool down, DWORD time) {
+    const bool byHook = device == ShortcutSource;
+    const bool changed = state_.transition(device, key.usage, down);
+    // Posted messages and WM_INPUT are separate queues. The other source can
+    // deliver a complete press after this source has already emitted it.
+    const auto duplicate = std::find_if(recentEdges_.begin(), recentEdges_.end(), [&](const auto& item) {
+        return item.pending && item.byHook != byHook && item.edge.usage == key.usage &&
+               item.edge.down == down && closeInputTimes(item.edge.time, time, DuplicateEdgeMs);
+    });
+    if (duplicate != recentEdges_.end()) {
+        duplicate->pending = false;
+        if (key.usage == LeftAltUsage) updateAltTimer();
+        return;
+    }
+    if (!changed) return;
+    if (shortcutMatched_) {
+        recentEdges_[nextEdge_] = {{key.usage, down, time}, byHook, true};
+        nextEdge_ = (nextEdge_ + 1) % recentEdges_.size();
+    }
+    if (down) {
+        ++diagnostics_.downEvents;
+        if (byHook) ++diagnostics_.shortcutDownEvents;
+    } else {
+        ++diagnostics_.upEvents;
+    }
+    emit(key, down);
+    if (key.usage == LeftAltUsage) updateAltTimer();
+}
+
+void RawKeyboard::updateShortcut() {
+    const auto aligned = [](const ShortcutStart& start) {
+        return start.raw && start.hook && closeInputTimes(*start.raw, *start.hook);
+    };
+    for (size_t slot = 0; slot < ShortcutModifiers.size(); ++slot) {
+        if (!state_.heldWithout(ShortcutSource, ShortcutModifiers[slot]))
+            shortcutStarts_[slot].raw.reset();
+    }
+    const bool matched = std::any_of(shortcutStarts_.begin(), shortcutStarts_.end(), aligned);
+    if (matched == shortcutMatched_) return;
+    shortcutMatched_ = matched;
+    if (matched) {
+        for (const auto& event : pendingShortcut_) {
+            const bool followsStart = std::any_of(shortcutStarts_.begin(), shortcutStarts_.end(),
+                [&](const auto& start) {
+                    return aligned(start) && static_cast<LONG>(event.time - *start.hook) >= 0;
+                });
+            if (const auto* key = followsStart ? config_.findUsage(event.usage) : nullptr)
+                routeKey(ShortcutSource, *key, event.down, event.time);
+        }
+        pendingShortcut_.clear();
+    } else {
+        for (const auto usage : state_.removeDevice(ShortcutSource)) {
+            ++diagnostics_.upEvents;
+            release(usage);
+        }
+        updateAltTimer();
+    }
+}
+
+void RawKeyboard::processShortcut(std::uint16_t usage, bool down, DWORD time) {
+    if (config_.deviceGroup != Action75Group) return;
+    if (const auto slot = shortcutModifier(usage)) {
+        const bool wasMatched = shortcutMatched_;
+        shortcutStarts_[*slot].hook = down ? std::optional<DWORD>(time) : std::nullopt;
+        if (std::none_of(shortcutStarts_.begin(), shortcutStarts_.end(),
+                         [](const auto& start) { return start.hook.has_value(); }))
+            pendingShortcut_.clear();
+        updateShortcut();
+        // The initial modifier is attributed through Raw Input. Additional
+        // modifiers can be routed while a matched shortcut is already held.
+        if (!wasMatched || !shortcutMatched_) return;
+    }
+    if (shortcutMatched_) {
+        if (const auto* key = config_.findUsage(usage)) routeKey(ShortcutSource, *key, down, time);
+    } else if (pendingShortcut_.size() < 32 &&
+               std::any_of(shortcutStarts_.begin(), shortcutStarts_.end(), [&](const auto& start) {
+                   return start.hook && closeInputTimes(time, *start.hook);
+               })) {
+        // Posted hook messages can be taken from the queue before the matching WM_INPUT.
+        pendingShortcut_.push_back({usage, down, time});
+    }
 }
 
 void RawKeyboard::setConfig(const PlayerConfig& config) {
@@ -281,6 +505,21 @@ void RawKeyboard::processFnReports(HANDLE device, const std::uint8_t* payload, s
 
 bool RawKeyboard::process(UINT message, WPARAM wParam, LPARAM lParam) {
     if (!window_) return false;
+    if (message == ShortcutMessage) {
+        processShortcut(static_cast<std::uint16_t>(wParam), (wParam & 0x10000u) != 0,
+                        static_cast<DWORD>(lParam));
+        return true;
+    }
+    if (message == WM_TIMER && wParam == AltReleaseTimer) {
+        if (altTimer_ && GetAsyncKeyState(VK_LMENU) >= 0 && state_.releaseUsage(LeftAltUsage)) {
+            ++diagnostics_.upEvents;
+            ++diagnostics_.recoveredAltReleases;
+            release(LeftAltUsage);
+            updateShortcut();
+        }
+        updateAltTimer();
+        return true;
+    }
     if (message == WM_INPUT_DEVICE_CHANGE) {
         if (wParam == GIDC_REMOVAL) {
             const auto handle = static_cast<std::uintptr_t>(lParam);
@@ -288,6 +527,8 @@ bool RawKeyboard::process(UINT message, WPARAM wParam, LPARAM lParam) {
             selected_.erase(handle);
             rejected_.erase(handle);
             fnCollections_.erase(reinterpret_cast<HANDLE>(lParam));
+            updateShortcut();
+            updateAltTimer();
         } else if (wParam == GIDC_ARRIVAL) refreshDevices();
         return true;
     }
@@ -351,10 +592,13 @@ bool RawKeyboard::process(UINT message, WPARAM wParam, LPARAM lParam) {
     const auto* mapping = key ? config_.findUsage(key->usage) : nullptr;
     if (!mapping) return true;
     const bool down = (flags & RI_KEY_BREAK) == 0;
-    if (state_.transition(device, key->usage, down)) {
-        if (down) ++diagnostics_.downEvents;
-        else ++diagnostics_.upEvents;
-        emit(*mapping, down);
+    const auto slot = shortcutModifier(key->usage);
+    const bool wasRawHeld = slot && state_.heldWithout(ShortcutSource, key->usage);
+    const auto inputTime = static_cast<DWORD>(GetMessageTime());
+    routeKey(device, *mapping, down, inputTime);
+    if (slot) {
+        if (down && !wasRawHeld) shortcutStarts_[*slot].raw = inputTime;
+        updateShortcut();
     }
     return true;
 }

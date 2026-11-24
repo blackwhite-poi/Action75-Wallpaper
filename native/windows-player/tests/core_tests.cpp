@@ -247,6 +247,33 @@ void inputTests() {
     require(removed.size() == 1 && removed[0] == 22, "Disconnect releases only usages no longer held elsewhere");
     const auto remaining = held.clear();
     require(remaining.size() == 1 && remaining[0] == 4 && held.clear().empty(), "Reset releases each logical key once");
+
+    constexpr std::uint16_t LeftAltUsage = 226, KeyEUsage = 8;
+    constexpr std::uintptr_t ShortcutSource = 0;
+    require(held.transition(1, LeftAltUsage, true) && held.held(LeftAltUsage), "Left Alt press is held");
+    require(held.releaseUsage(LeftAltUsage) && !held.held(LeftAltUsage), "Recover missing Alt release");
+    require(!held.transition(1, LeftAltUsage, false) && held.transition(1, LeftAltUsage, true),
+            "Late Alt release is idempotent and the next press is accepted");
+    held.clear();
+
+    require(held.transition(ShortcutSource, KeyEUsage, true), "Hook press emits immediately");
+    require(!held.transition(1, KeyEUsage, true), "Matching Raw Input press does not emit twice");
+    require(held.removeDevice(ShortcutSource).empty(), "Ending the hook session leaves a physical press held");
+    require(held.transition(1, KeyEUsage, false), "Physical release emits once");
+    require(held.transition(ShortcutSource, KeyEUsage, true), "Start a hook-only press");
+    const auto hookOnly = held.removeDevice(ShortcutSource);
+    require(hookOnly.size() == 1 && hookOnly[0] == KeyEUsage, "Ending a session releases hook-only presses");
+
+    for (const auto modifier : {224, 228, 226, 230, 227, 231}) {
+        const auto usage = static_cast<std::uint16_t>(modifier);
+        require(held.transition(ShortcutSource, usage, true), "Register a hook-only modifier");
+        require(!held.heldWithout(ShortcutSource, usage), "A hook-only modifier cannot prove device ownership");
+        require(!held.transition(1, usage, true) && held.heldWithout(ShortcutSource, usage),
+                "Raw Input confirms a modifier even when it arrived through the hook first");
+        require(!held.transition(1, usage, false) && !held.heldWithout(ShortcutSource, usage),
+                "The hook cannot keep a physically released modifier eligible for matching");
+        held.clear();
+    }
 }
 
 void monitorRecoveryTests() {
