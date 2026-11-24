@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "presentation": "layered",
+  "groups": [
+    {
+      "id": "look",
+      "label": "外观与光影",
+      "entity": "外观与光影",
+      "controls": [
+        {
+          "id": "themeMode",
+          "label": "背景主题",
+          "type": "select",
+          "appearance": "style",
+          "default": 0,
+          "advanced": false,
+          "options": [
+            { "value": 0, "label": "深邃暗黑 (Dark)" },
+            { "value": 1, "label": "极简纸白 (Light 水墨渗透)" },
+            { "value": 2, "label": "深海午夜 (Midnight)" },
+            { "value": 3, "label": "自定义底色 (Custom)" }
+          ]
+        },
+        {
+          "id": "bgColor",
+          "label": "自定义背景色",
+          "type": "color",
+          "default": [5, 6, 10],
+          "advanced": false,
+          "visibleWhen": { "id": "themeMode", "equals": 3 }
+        },
+        {
+          "id": "intensity",
+          "label": "墨水浓度 / 亮度",
+          "type": "slider",
+          "appearance": "brightness",
+          "default": 1.0,
+          "min": 0.2,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×",
+          "advanced": false
+        },
+        {
+          "id": "glow",
+          "label": "辉光泛光 (Bloom)",
+          "type": "slider",
+          "default": 0.35,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": false
+        },
+        {
+          "id": "shading",
+          "label": "立体浮雕光影",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": true
+        },
+        {
+          "id": "quality",
+          "label": "模拟画质",
+          "type": "select",
+          "default": 2,
+          "advanced": true,
+          "options": [
+            { "value": 0, "label": "流畅 (Low)" },
+            { "value": 1, "label": "均衡 (Medium)" },
+            { "value": 2, "label": "极致 (High)" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "colors",
+      "label": "色彩系统",
+      "entity": "色彩系统",
+      "controls": [
+        {
+          "id": "colorMode",
+          "label": "色彩模式",
+          "type": "select",
+          "default": 0,
+          "advanced": false,
+          "options": [
+            { "value": 0, "label": "彩虹流光 (Rainbow)" },
+            { "value": 1, "label": "预设组合色 (Palette)" },
+            { "value": 2, "label": "自定义双色渐变" },
+            { "value": 3, "label": "自定义四色组合" },
+            { "value": 4, "label": "单色纯净" },
+            { "value": 5, "label": "每次随机色彩" }
+          ]
+        },
+        {
+          "id": "palettePreset",
+          "label": "预设组合色方案",
+          "type": "select",
+          "default": 0,
+          "advanced": false,
+          "visibleWhen": { "id": "colorMode", "equals": 1 },
+          "options": [
+            { "value": 0, "label": "ReactBits 默认 (电光蓝/薄荷/暖金)" },
+            { "value": 1, "label": "霓虹赛博 (青/粉/紫/黄)" },
+            { "value": 2, "label": "日落熔岩 (玫红/珊瑚/琥珀)" },
+            { "value": 3, "label": "极光幻境 (天蓝/翡翠/紫罗兰)" },
+            { "value": 4, "label": "樱花气泡 (粉樱/蜜桃/鹅黄)" },
+            { "value": 5, "label": "深海幽蓝 (蔚蓝/冰青)" },
+            { "value": 6, "label": "毒液紫晶 (深紫/洋红/电青)" },
+            { "value": 7, "label": "翡翠森林 (祖母绿/青柠/天青)" }
+          ]
+        },
+        {
+          "id": "primaryColor",
+          "label": "主色 (单色/双色起点)",
+          "type": "color",
+          "appearance": "color",
+          "default": [79, 140, 255],
+          "advanced": false
+        },
+        {
+          "id": "secondaryColor",
+          "label": "次色 (双色终点)",
+          "type": "color",
+          "default": [45, 212, 191],
+          "advanced": false,
+          "visibleWhen": { "id": "colorMode", "equals": 2 }
+        },
+        {
+          "id": "customColor1",
+          "label": "组合色 1",
+          "type": "color",
+          "default": [79, 140, 255],
+          "advanced": false,
+          "visibleWhen": { "id": "colorMode", "equals": 3 }
+        },
+        {
+          "id": "customColor2",
+          "label": "组合色 2",
+          "type": "color",
+          "default": [45, 212, 191],
+          "advanced": false,
+          "visibleWhen": { "id": "colorMode", "equals": 3 }
+        },
+        {
+          "id": "customColor3",
+          "label": "组合色 3",
+          "type": "color",
+          "default": [255, 209, 102],
+          "advanced": false,
+          "visibleWhen": { "id": "colorMode", "equals": 3 }
+        },
+        {
+          "id": "customColor4",
+          "label": "组合色 4",
+          "type": "color",
+          "default": [245, 92, 181],
+          "advanced": false,
+          "visibleWhen": { "id": "colorMode", "equals": 3 }
+        },
+        {
+          "id": "saturation",
+          "label": "色彩饱和度",
+          "type": "slider",
+          "appearance": "saturation",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": false
+        },
+        {
+          "id": "colorSpeed",
+          "label": "色彩流动速度",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 3.0,
+          "step": 0.1,
+          "unit": "×",
+          "advanced": true
+        }
+      ]
+    },
+    {
+      "id": "physics",
+      "label": "流体物理",
+      "entity": "流体物理",
+      "controls": [
+        {
+          "id": "size",
+          "label": "笔刷与溅射尺寸",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.2,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×"
+        },
+        {
+          "id": "force",
+          "label": "流体推力",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.2,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×"
+        },
+        {
+          "id": "swirl",
+          "label": "涡旋强度 (Curl)",
+          "type": "slider",
+          "default": 3.0,
+          "min": 0.0,
+          "max": 12.0,
+          "step": 0.5
+        },
+        {
+          "id": "trail",
+          "label": "墨迹留存时长",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.3,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×"
+        },
+        {
+          "id": "momentum",
+          "label": "流体动量惯性",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.3,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×"
+        }
+      ]
+    },
+    {
+      "id": "interaction",
+      "label": "交互与性能",
+      "entity": "交互与性能",
+      "controls": [
+        {
+          "id": "keyInteraction",
+          "label": "键盘按键联动",
+          "type": "select",
+          "default": 0,
+          "options": [
+            { "value": 0, "label": "皇冠溅射 (Crown Burst)" },
+            { "value": 1, "label": "定向扫掠 (Fluid Sweep)" },
+            { "value": 2, "label": "仅鼠标指针" }
+          ]
+        },
+        {
+          "id": "clickSplash",
+          "label": "点击皇冠溅射",
+          "type": "toggle",
+          "default": true
+        },
+        {
+          "id": "intro",
+          "label": "启动 S 形入场扫屏",
+          "type": "toggle",
+          "default": true
+        },
+        {
+          "id": "fpsCap",
+          "label": "帧率上限",
+          "type": "slider",
+          "default": 60,
+          "min": 30,
+          "max": 120,
+          "step": 15,
+          "unit": "FPS"
+        }
+      ]
+    }
+  ]
+}

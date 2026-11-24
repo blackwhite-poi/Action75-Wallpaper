@@ -9,7 +9,7 @@ import tempfile
 from urllib.parse import quote, unquote, urlsplit
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from release_payload import ROOT, digest, inventory, wallpaper_files
+from release_payload import ROOT, digest, inventory, wallpaper_abi, wallpaper_files
 
 
 CHECK = runpy.run_path(str(ROOT / "tools/verify-native-wallpapers.py"))
@@ -42,8 +42,8 @@ def prepare(template, output, builtin_dir, ferrofluid, dumpbin, baseline=None):
                 original = (baseline / "examples/native-wallpapers/ferrofluid/Ferrofluid"
                             if pack_id == EXTENSION else baseline / "wallpapers-native" / pack_id)
             declared = wallpaper_files(inventory_data, pack_id, pack) if pack_id in builtins else None
-            evidence = CHECK["check_pack"](pack, 2, dumpbin, declared=declared,
-                                            expected_id=pack_id, baseline=original)
+            evidence = CHECK["check_pack"](pack, wallpaper_abi(inventory_data, pack_id), dumpbin,
+                                            declared=declared, expected_id=pack_id, baseline=original)
             pack_name = PurePosixPath(unquote(urlsplit(item["download"]).path)).name
             if (not pack_name.endswith(".zip") or any(char in pack_name for char in '\\:*?"<>|')
                     or pack_name.casefold() in used_names):

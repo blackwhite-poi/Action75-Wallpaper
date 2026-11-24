@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "fluid-pixel-cursor",
+  "name": "像素流体矩阵",
+  "kind": "native",
+  "description": "灵感源自 Fluid Pixel Cursor：按键与指针在极简像素矩阵中注入真实流体涡旋拖尾，支持暗黑/纸白/炭灰主题、像素格子密度自由调节、单色/双色/多色预设/自选四色/随机色切换，静置自动休眠。",
+  "abi": 1,
+  "entry": "wallpaper.dll",
+  "settings": "settings.json",
+  "preview": "preview.png",
+  "packVersion": "1.0.0",
+  "renderer": "d3d11",
+  "license": "Fluid Pixel Cursor reference: MIT"
+}

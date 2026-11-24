@@ -1,0 +1,700 @@
+{
+  "version": 1,
+  "presentation": "layered",
+  "groups": [
+    {
+      "id": "appearance",
+      "label": "像素矩阵",
+      "entity": "像素矩阵",
+      "controls": [
+        {
+          "id": "themeMode",
+          "label": "背景主题",
+          "type": "select",
+          "appearance": "style",
+          "default": 0,
+          "advanced": false,
+          "options": [
+            {
+              "value": 0,
+              "label": "深邃暗黑 (Dark)"
+            },
+            {
+              "value": 1,
+              "label": "极简纸白 (Light)"
+            },
+            {
+              "value": 2,
+              "label": "炭灰蓝调 (Slate)"
+            }
+          ]
+        },
+        {
+          "id": "gridDensity",
+          "label": "像素格子密度",
+          "type": "slider",
+          "default": 80,
+          "min": 20,
+          "max": 160,
+          "step": 4,
+          "unit": "列",
+          "advanced": false
+        },
+        {
+          "id": "pixelShape",
+          "label": "像素块形状",
+          "type": "select",
+          "default": 0,
+          "advanced": false,
+          "options": [
+            {
+              "value": 0,
+              "label": "锐利方块 (Square)"
+            },
+            {
+              "value": 1,
+              "label": "圆角像素 (Rounded)"
+            },
+            {
+              "value": 2,
+              "label": "点阵圆点 (Dot)"
+            },
+            {
+              "value": 3,
+              "label": "十字准星 (Cross)"
+            },
+            {
+              "value": 4,
+              "label": "锐利三角 (Triangle)"
+            },
+            {
+              "value": 5,
+              "label": "菱形晶格 (Diamond)"
+            },
+            {
+              "value": 6,
+              "label": "六边形蜂巢 (Hexagon)"
+            },
+            {
+              "value": 7,
+              "label": "Shape Grid 交替旋转"
+            }
+          ]
+        },
+        {
+          "id": "cellGap",
+          "label": "格子间距",
+          "type": "slider",
+          "default": 0.16,
+          "min": 0.0,
+          "max": 0.45,
+          "step": 0.02,
+          "advanced": true
+        },
+        {
+          "id": "gridLineOpacity",
+          "label": "静置底格透明度",
+          "type": "slider",
+          "default": 0.08,
+          "min": 0.0,
+          "max": 0.4,
+          "step": 0.02,
+          "advanced": true
+        }
+      ]
+    },
+    {
+      "id": "colors",
+      "label": "色彩系统",
+      "entity": "色彩系统",
+      "controls": [
+        {
+          "id": "colorMode",
+          "label": "色彩模式",
+          "type": "select",
+          "default": 2,
+          "advanced": false,
+          "options": [
+            {
+              "value": 0,
+              "label": "单色模式"
+            },
+            {
+              "value": 1,
+              "label": "双色渐变"
+            },
+            {
+              "value": 2,
+              "label": "预设多色组合"
+            },
+            {
+              "value": 3,
+              "label": "自选四色组合"
+            },
+            {
+              "value": 4,
+              "label": "每次按键随机"
+            }
+          ]
+        },
+        {
+          "id": "glowIntensity",
+          "label": "像素亮度",
+          "type": "slider",
+          "appearance": "brightness",
+          "default": 1.05,
+          "min": 0.2,
+          "max": 2.0,
+          "step": 0.05,
+          "unit": "×",
+          "advanced": false
+        },
+        {
+          "id": "palettePreset",
+          "label": "多色预设方案",
+          "type": "select",
+          "default": 0,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "colorMode",
+            "equals": 2
+          },
+          "options": [
+            {
+              "value": 0,
+              "label": "赛博青紫"
+            },
+            {
+              "value": 1,
+              "label": "莱茵琥珀"
+            },
+            {
+              "value": 2,
+              "label": "冰川极光"
+            },
+            {
+              "value": 3,
+              "label": "烈焰熔岩"
+            },
+            {
+              "value": 4,
+              "label": "樱花幻彩"
+            }
+          ]
+        },
+        {
+          "id": "primaryColor",
+          "label": "主色",
+          "type": "color",
+          "appearance": "color",
+          "default": [
+            56,
+            199,
+            255
+          ],
+          "advanced": false
+        },
+        {
+          "id": "secondaryColor",
+          "label": "次色（渐变终端）",
+          "type": "color",
+          "default": [
+            217,
+            64,
+            255
+          ],
+          "advanced": false,
+          "visibleWhen": {
+            "id": "colorMode",
+            "equals": 1
+          }
+        },
+        {
+          "id": "customColor1",
+          "label": "自选色 1",
+          "type": "color",
+          "default": [
+            46,
+            217,
+            255
+          ],
+          "advanced": false,
+          "visibleWhen": {
+            "id": "colorMode",
+            "equals": 3
+          }
+        },
+        {
+          "id": "customColor2",
+          "label": "自选色 2",
+          "type": "color",
+          "default": [
+            255,
+            107,
+            46
+          ],
+          "advanced": false,
+          "visibleWhen": {
+            "id": "colorMode",
+            "equals": 3
+          }
+        },
+        {
+          "id": "customColor3",
+          "label": "自选色 3",
+          "type": "color",
+          "default": [
+            158,
+            76,
+            255
+          ],
+          "advanced": false,
+          "visibleWhen": {
+            "id": "colorMode",
+            "equals": 3
+          }
+        },
+        {
+          "id": "customColor4",
+          "label": "自选色 4",
+          "type": "color",
+          "default": [
+            51,
+            245,
+            166
+          ],
+          "advanced": false,
+          "visibleWhen": {
+            "id": "colorMode",
+            "equals": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "physics",
+      "label": "动效与物理",
+      "entity": "动效与物理",
+      "controls": [
+        {
+          "id": "motionStyle",
+          "label": "动效模式",
+          "type": "select",
+          "default": 0,
+          "advanced": false,
+          "options": [
+            {
+              "value": 0,
+              "label": "涡旋流体 (Fluid Swirl)"
+            },
+            {
+              "value": 1,
+              "label": "冲击波纹 (Shockwave)"
+            },
+            {
+              "value": 2,
+              "label": "故障切片 (Cyber Glitch)"
+            },
+            {
+              "value": 3,
+              "label": "跃动闪烁 (Kinetic Sparkle)"
+            },
+            {
+              "value": 4,
+              "label": "重力雨落 (Gravity Rain)"
+            },
+            {
+              "value": 5,
+              "label": "核反应堆起伏 (Reactor Surge)"
+            },
+            {
+              "value": 6,
+              "label": "弹性推开点阵 (Dot Grid)"
+            },
+            {
+              "value": 7,
+              "label": "丝绸半调波浪 (Pattern Waves)"
+            },
+            {
+              "value": 8,
+              "label": "透视波纹网格 (Ripple Grid)"
+            },
+            {
+              "value": 9,
+              "label": "透镜畸变点阵 (Dot Field)"
+            },
+            {
+              "value": 10,
+              "label": "中心水波涟漪 (Water Ripple)"
+            }
+          ]
+        },
+        {
+          "id": "sizePulse",
+          "label": "像素缩放弹性",
+          "type": "slider",
+          "default": 0.35,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": false
+        },
+        {
+          "id": "keyScale",
+          "label": "按键范围倍率",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.3,
+          "max": 2.0,
+          "step": 0.05,
+          "unit": "×",
+          "advanced": true
+        },
+        {
+          "id": "edgeFeather",
+          "label": "边缘羽化程度",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.05,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×",
+          "advanced": true
+        },
+        {
+          "id": "shockFreq",
+          "label": "冲击波纹频率",
+          "type": "slider",
+          "default": 14.0,
+          "min": 6.0,
+          "max": 24.0,
+          "step": 0.5,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 1
+          }
+        },
+        {
+          "id": "shockSpeed",
+          "label": "冲击波纹速度",
+          "type": "slider",
+          "default": 14.0,
+          "min": 4.0,
+          "max": 24.0,
+          "step": 0.5,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 1
+          }
+        },
+        {
+          "id": "glitchStrength",
+          "label": "切片错位强度",
+          "type": "slider",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 3.0,
+          "step": 0.1,
+          "unit": "×",
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 2
+          }
+        },
+        {
+          "id": "glitchRate",
+          "label": "故障跳变频率",
+          "type": "slider",
+          "default": 18.0,
+          "min": 4.0,
+          "max": 36.0,
+          "step": 1.0,
+          "unit": "Hz",
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 2
+          }
+        },
+        {
+          "id": "glitchRgb",
+          "label": "故障色差偏移",
+          "type": "slider",
+          "default": 0.45,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": true,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 2
+          }
+        },
+        {
+          "id": "sparkleRate",
+          "label": "闪烁频率",
+          "type": "slider",
+          "default": 20.0,
+          "min": 4.0,
+          "max": 36.0,
+          "step": 1.0,
+          "unit": "Hz",
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 3
+          }
+        },
+        {
+          "id": "sparkleDensity",
+          "label": "闪烁密度",
+          "type": "slider",
+          "default": 0.5,
+          "min": 0.1,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 3
+          }
+        },
+        {
+          "id": "rainGravity",
+          "label": "雨落重力速度",
+          "type": "slider",
+          "default": 1.65,
+          "min": 0.3,
+          "max": 4.0,
+          "step": 0.05,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 4
+          }
+        },
+        {
+          "id": "reactorSpacing",
+          "label": "控制棒间隔格数",
+          "type": "slider",
+          "default": 2.0,
+          "min": 1.0,
+          "max": 6.0,
+          "step": 1.0,
+          "unit": "格",
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 5
+          }
+        },
+        {
+          "id": "reactorSpeed",
+          "label": "反应堆起伏频率",
+          "type": "slider",
+          "default": 4.5,
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.25,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 5
+          }
+        },
+        {
+          "id": "reactorMinGlow",
+          "label": "波谷最低亮度",
+          "type": "slider",
+          "default": 0.32,
+          "min": 0.0,
+          "max": 0.8,
+          "step": 0.04,
+          "advanced": true,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 5
+          }
+        },
+        {
+          "id": "dotPush",
+          "label": "弹性推开幅度",
+          "type": "slider",
+          "default": 0.32,
+          "min": 0.05,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 6
+          }
+        },
+        {
+          "id": "patternFreq",
+          "label": "丝绸波浪密度",
+          "type": "slider",
+          "default": 0.35,
+          "min": 0.1,
+          "max": 1.0,
+          "step": 0.05,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 7
+          }
+        },
+        {
+          "id": "patternSpeed",
+          "label": "丝绸波浪速度",
+          "type": "slider",
+          "default": 5.0,
+          "min": 1.0,
+          "max": 12.0,
+          "step": 0.5,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 7
+          }
+        },
+        {
+          "id": "rippleWarp",
+          "label": "网格扭曲幅度",
+          "type": "slider",
+          "default": 0.18,
+          "min": 0.0,
+          "max": 0.6,
+          "step": 0.02,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 8
+          }
+        },
+        {
+          "id": "rippleLineWidth",
+          "label": "网格线粗细",
+          "type": "slider",
+          "default": 1.4,
+          "min": 0.4,
+          "max": 3.0,
+          "step": 0.1,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 8
+          }
+        },
+        {
+          "id": "lensPower",
+          "label": "光学透镜放大倍率",
+          "type": "slider",
+          "default": 0.55,
+          "min": 0.1,
+          "max": 1.5,
+          "step": 0.05,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 9
+          }
+        },
+        {
+          "id": "waterSpeed",
+          "label": "水波扩散速度",
+          "type": "slider",
+          "default": 0.85,
+          "min": 0.2,
+          "max": 2.0,
+          "step": 0.05,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 10
+          }
+        },
+        {
+          "id": "waterFreq",
+          "label": "水波环纹密度",
+          "type": "slider",
+          "default": 48.0,
+          "min": 16.0,
+          "max": 96.0,
+          "step": 2.0,
+          "advanced": false,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 10
+          }
+        },
+        {
+          "id": "waterBand",
+          "label": "水波波带宽度",
+          "type": "slider",
+          "default": 0.065,
+          "min": 0.02,
+          "max": 0.18,
+          "step": 0.005,
+          "advanced": true,
+          "visibleWhen": {
+            "id": "motionStyle",
+            "equals": 10
+          }
+        },
+        {
+          "id": "burstStrength",
+          "label": "流体冲击力度",
+          "type": "slider",
+          "default": 1.2,
+          "min": 0.3,
+          "max": 2.5,
+          "step": 0.05,
+          "unit": "×",
+          "advanced": true
+        },
+        {
+          "id": "fluidViscosity",
+          "label": "消散衰减速度",
+          "type": "slider",
+          "default": 1.55,
+          "min": 0.5,
+          "max": 5.0,
+          "step": 0.05,
+          "advanced": true
+        },
+        {
+          "id": "turbulence",
+          "label": "涡旋扰动强度",
+          "type": "slider",
+          "default": 1.15,
+          "min": 0.0,
+          "max": 2.5,
+          "step": 0.05,
+          "advanced": true
+        },
+        {
+          "id": "pointerInteract",
+          "label": "鼠标指针流体联动",
+          "type": "toggle",
+          "default": true,
+          "advanced": true
+        },
+        {
+          "id": "fpsCap",
+          "label": "帧率上限 (0=不限)",
+          "type": "slider",
+          "default": 60,
+          "min": 0,
+          "max": 240,
+          "step": 15,
+          "unit": "FPS",
+          "advanced": true
+        }
+      ]
+    }
+  ]
+}

@@ -7,7 +7,7 @@ import runpy
 import shutil
 import tempfile
 
-from release_payload import ROOT, digest, inventory, wallpaper_files
+from release_payload import ROOT, digest, inventory, wallpaper_abi, wallpaper_files
 
 
 CHECK = runpy.run_path(str(ROOT / "tools/verify-native-wallpapers.py"))
@@ -22,6 +22,9 @@ def stage(sdk_output, destination):
     aliases = settings.get("nativeBuildAliases", {})
     if not set(aliases).issubset(settings["wallpapers"]):
         raise ValueError("An author build alias must refer to a declared built-in pack")
+    prebuilt = set(settings.get("prebuiltNativeWallpapers", ()))
+    if not prebuilt.issubset(settings["wallpapers"]) or prebuilt.intersection(aliases):
+        raise ValueError("A prebuilt pack must be a declared built-in without a build alias")
     results = {}
     for path in sdk_output.glob("*-pe.json"):
         receipt = json.loads(path.read_bytes())
@@ -44,12 +47,15 @@ def stage(sdk_output, destination):
         temporary.mkdir()
         for pack_id in sorted(settings["wallpapers"]):
             build_id = aliases.get(pack_id, pack_id)
-            if build_id not in results:
-                raise ValueError(f"No passed author build for {pack_id} ({build_id})")
-            source, receipt = results[build_id]
+            baseline = ROOT / "wallpapers-native" / pack_id
+            if pack_id in prebuilt:
+                source, receipt = baseline, None
+            else:
+                if build_id not in results:
+                    raise ValueError(f"No passed author build for {pack_id} ({build_id})")
+                source, receipt = results[build_id]
             target = temporary / pack_id
             target.mkdir()
-            baseline = ROOT / "wallpapers-native" / pack_id
             names = wallpaper_files(settings, pack_id, source if build_id == pack_id else baseline)
             if build_id == pack_id:
                 for name in names:
@@ -57,7 +63,7 @@ def stage(sdk_output, destination):
                     path = target / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(file, path)
-                    if digest(path) != receipt["assetsSha256"].get(name):
+                    if receipt is not None and digest(path) != receipt["assetsSha256"].get(name):
                         raise ValueError(f"Author build asset changed: {file}")
             else:
                 manifest = json.loads((baseline / "manifest.json").read_bytes())
@@ -74,7 +80,8 @@ def stage(sdk_output, destination):
                             raise ValueError(f"Author build DLL changed: {build_id}")
                     else:
                         shutil.copy2(CHECK["package_file"](baseline, name), path)
-            CHECK["check_pack"](target, 2, dumpbin, declared=names, expected_id=pack_id, baseline=baseline)
+            CHECK["check_pack"](target, wallpaper_abi(settings, pack_id), dumpbin, declared=names,
+                                expected_id=pack_id, baseline=baseline)
         temporary.rename(destination)
     return destination
 

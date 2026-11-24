@@ -9,7 +9,7 @@ import shutil
 import struct
 import subprocess
 
-from release_payload import ROOT, digest, inventory, wallpaper_files
+from release_payload import ROOT, digest, inventory, wallpaper_abi, wallpaper_files
 
 
 ENTRY_POINTS = {1: "Action75GetWallpaper", 2: "Action75GetWallpaper12"}
@@ -196,7 +196,8 @@ def main():
         declared = {key: wallpaper_files(assets, key, options.library_dir / key) for key in assets["wallpapers"]}
         if len(declared) != len({pack_id.casefold() for pack_id in declared}):
             raise ValueError("Duplicate built-in pack IDs under Windows filename rules")
-        entries.extend((options.library_dir / pack_id, 2, {"declared": names, "expected_id": pack_id})
+        entries.extend((options.library_dir / pack_id, wallpaper_abi(assets, pack_id),
+                        {"declared": names, "expected_id": pack_id})
                        for pack_id, names in sorted(declared.items()))
     if not entries:
         parser.error("Provide --builtins, --pack, --compare or --legacy-fixture")

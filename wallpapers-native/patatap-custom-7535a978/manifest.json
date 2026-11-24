@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "patatap-custom-7535a978",
+  "name": "Patatap",
+  "kind": "native",
+  "abi": 1,
+  "renderer": "d3d11",
+  "entry": "wallpaper.dll",
+  "settings": "settings.json",
+  "packVersion": "1.0.0",
+  "preview": "preview.png",
+  "description": "自选配色与动作组合，分别调节按键动画、全局动画和背景底色。",
+  "license": "MIT / ISC / BSD-2-Clause (effects and references); Apache-2.0 (Action75 SDK)"
+}

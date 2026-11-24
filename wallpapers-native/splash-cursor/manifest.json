@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "splash-cursor",
+  "name": "流体溅射",
+  "kind": "native",
+  "description": "移动指针拖出流体尾迹，点击或按键激起彩色溅射。支持泛光、浮雕光影和多种配色。",
+  "abi": 1,
+  "entry": "wallpaper.dll",
+  "settings": "settings.json",
+  "preview": "preview.png",
+  "packVersion": "1.0.0",
+  "renderer": "d3d11"
+}

@@ -23,6 +23,7 @@
   "nativeBuildAliases": {
     "black-hole": "event-horizon-native"
   },
+  "prebuiltNativeWallpapers": ["fluid-pixel-cursor", "patatap-custom-7535a978", "splash-cursor"],
   "externalWallpaperFiles": {
     "paintball-native": [
       "scene.json",
@@ -85,6 +86,7 @@
     "afterimage": ["wallpaper.dll", "scene.json", "background.png", "preview.png", "burst.png", "manifest.json", "settings.json"],
     "black-hole": ["manifest.json", "wallpaper.dll", "nebula-source.txt", "nebula.png", "preview.png", "settings.json"],
     "carrier": ["wallpaper.dll", "scene.json", "background.png", "preview.png", "burst.png", "manifest.json", "settings.json"],
+    "fluid-pixel-cursor": ["licenses/Fluid-Pixel-Cursor-MIT.txt", "manifest.json", "preview.png", "settings.json", "wallpaper.dll"],
     "folio": ["wallpaper.dll", "scene.json", "background.png", "preview.png", "burst.png", "manifest.json", "settings.json"],
     "gilded-synapse": ["wallpaper.dll", "layout.json", "manifest.json", "preview.png", "settings.json"],
     "glass-shatter": ["wallpaper.dll", "manifest.json", "preview.png", "settings.json"],
@@ -142,7 +144,9 @@
       "textures/T_RainbowGrad_01.png",
       "textures/T_SplatWave.png"
     ],
+    "patatap-custom-7535a978": ["licenses/Action75-Apache-2.0.txt", "licenses/Action75-license-scope.md", "licenses/Animejs-MIT-v1.1.txt", "licenses/Geometry-reference-notes.md", "licenses/Patatap-MIT.txt", "licenses/Patatap-source-notes.md", "licenses/Pavel-Fluid-MIT.txt", "licenses/README.txt", "licenses/SOURCE-LICENSE.txt", "licenses/Tween-js-MIT.txt", "licenses/Two-js-MIT.txt", "licenses/WebKit-Spring-BSD-2-Clause-v1.1.txt", "licenses/canvas-confetti-ISC-v1.1.txt", "licenses/mojs-MIT-v1.1.txt", "licenses/nlohmann-json-LICENSE.txt", "licenses/tsParticles-MIT-v1.1.txt", "manifest.json", "preview.png", "settings.json", "wallpaper.dll"],
     "silk-nebula": ["wallpaper.dll", "layout.json", "manifest.json", "preview.png", "settings.json"],
+    "splash-cursor": ["manifest.json", "preview.png", "settings.json", "wallpaper.dll"],
     "stillwater": ["wallpaper.dll", "manifest.json", "preview.png", "settings.json"],
     "tidal-glass": ["wallpaper.dll", "scene.json", "background.png", "preview.png", "burst.png", "manifest.json", "settings.json"]
   }

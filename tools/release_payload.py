@@ -35,6 +35,10 @@ def inventory(root=ROOT):
     return json.loads((root / "tools/release-assets.json").read_text(encoding="utf-8"))
 
 
+def wallpaper_abi(assets, pack_id):
+    return 1 if pack_id in assets.get("prebuiltNativeWallpapers", ()) else 2
+
+
 def wallpaper_files(assets, pack_id, directory, *, include_generated=True):
     names = assets["wallpapers"][pack_id]
     if not include_generated:

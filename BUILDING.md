@@ -40,6 +40,7 @@ python tools/stage-native-wallpapers.py --sdk-output artifacts/author-builds --o
 
 水彩材质的可编辑 HLSL 位于 `native/windows-player/materials/paintball`。修改后用 `python tools/compile-paintball-materials.py` 更新材质源，再构建 `atlas-packs` 生成 DX12 缓存及成品。
 `tools/release-assets.json` 定义安装包和源码归档共同分发的文件。新增内置壁纸或资源时更新这份清单。
+`prebuiltNativeWallpapers` 列出随仓库分发的预构建 D3D11 原生包。发行暂存从对应的壁纸目录读取这些包，并按 ABI 1 验证。其他原生内置壁纸继续使用独立构建的 ABI 2 产物。
 
 `python tools/verify-release.py --receipt artifacts/distribution-build/build.json --compiler '<ISCC.exe 路径>'` 构建带独立身份的测试安装器，检查安装、重复安装、同 ID 壁纸保留、播放中卸载和正式安装登记。完整验收还会在隔离桌面导入壁纸，验证参数、目录重载和离屏负载。CI 使用 `--install-only` 完成安装生命周期检查。
 
