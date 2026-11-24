@@ -214,7 +214,7 @@ fn gray_alpha(color: Color32, alpha: f32) -> Color32 {
 pub struct Shell {
     animations: Option<bool>,
     tone: Option<u8>,
-    surface: Option<(Rect, u8, Arc<Mesh>)>,
+    surface: Option<(Rect, u8, bool, Arc<Mesh>)>,
 }
 
 impl Shell {
@@ -229,7 +229,7 @@ impl Shell {
             .to_normalized_gamma_f32()
     }
 
-    pub fn paint(&mut self, ctx: &egui::Context, theme: InterfaceTheme) {
+    pub fn paint(&mut self, ctx: &egui::Context, theme: InterfaceTheme, acrylic: bool) {
         let enabled = *self.animations.get_or_insert_with(system_animates);
         if self.tone.is_none() {
             ctx.style_mut(|style| style.animation_time = if enabled { PAGE } else { 0. });
@@ -248,14 +248,17 @@ impl Shell {
         }
         let rect = ctx.content_rect();
         if rect.is_positive() {
-            if !self
-                .surface
-                .as_ref()
-                .is_some_and(|(bounds, step, _)| *bounds == rect && *step == tone)
-            {
-                self.surface = Some((rect, tone, Arc::new(case_surface(rect, colors))));
+            if !self.surface.as_ref().is_some_and(|(bounds, step, glass, _)| {
+                *bounds == rect && *step == tone && *glass == acrylic
+            }) {
+                self.surface = Some((
+                    rect,
+                    tone,
+                    acrylic,
+                    Arc::new(case_surface(rect, colors, acrylic)),
+                ));
             }
-            if let Some((_, _, mesh)) = &self.surface {
+            if let Some((_, _, _, mesh)) = &self.surface {
                 ctx.layer_painter(egui::LayerId::background())
                     .add(egui::Shape::Mesh(mesh.clone()));
             }
@@ -316,7 +319,7 @@ fn apply_visuals(ctx: &egui::Context, c: Colors, dark: bool) {
     });
 }
 
-fn case_surface(rect: Rect, colors: Colors) -> Mesh {
+fn case_surface(rect: Rect, colors: Colors, acrylic: bool) -> Mesh {
     let mut mesh = Mesh::default();
     const COLS: u32 = 16;
     const ROWS: u32 = 12;
@@ -327,7 +330,12 @@ fn case_surface(rect: Rect, colors: Colors) -> Mesh {
             let base = mix(colors.bright, colors.ground, ((x + y) / 1.25).min(1.));
             let radius = vec2((x - 1.04) / 1.28, (y - 1.12) / 0.68).length();
             let shaded = mix(base, colors.cast, ((0.75 - radius) / 0.66).clamp(0., 1.));
-            mesh.colored_vertex(rect.min + rect.size() * vec2(x, y), shaded);
+            let fill = if acrylic {
+                shaded.gamma_multiply(0.64)
+            } else {
+                shaded
+            };
+            mesh.colored_vertex(rect.min + rect.size() * vec2(x, y), fill);
             if col < COLS && row < ROWS {
                 let i = row * (COLS + 1) + col;
                 let j = i + COLS + 1;
