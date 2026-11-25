@@ -1,4 +1,5 @@
 #include "Dx12Output.h"
+#include "HmdOutput.h"
 #include <stdexcept>
 #include <cstdio>
 #include <vector>
@@ -84,6 +85,22 @@ struct Dx12Output::Readback {
 };
 
 Dx12Output::Dx12Output() = default;
+bool Dx12Output::initializeHmd(const std::wstring &path, std::string &error) {
+  hmd_ = HmdOutput::open(path, error);
+  if (!hmd_) return false;
+  event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!event_) {
+    error = "Create HMD worker validation event failed";
+    return false;
+  }
+  device_ = hmd_->device();
+  width = HmdOutput::Width;
+  height = HmdOutput::Height;
+  const auto luid = hmd_->adapterLuid();
+  adapterLuid = (uint64_t(uint32_t(luid.HighPart)) << 32) | luid.LowPart;
+  adapterName = L"Action75 HMD";
+  return true;
+}
 Dx12Output::~Dx12Output() {
   clearComposition();
   if (readback_ && !readback_->complete()) {
@@ -294,6 +311,10 @@ bool Dx12Output::resize(unsigned w, unsigned h, std::string &error) {
   try {
     if (!w || !h || w > 16384 || h > 16384)
       throw std::runtime_error("Invalid D3D12 output dimensions");
+    if (hmd_) {
+      if (w == width && h == height) return true;
+      throw std::runtime_error("HMD output requires its native display dimensions");
+    }
     if (composes()) {
       width = w;
       height = h;
@@ -359,6 +380,8 @@ void Dx12Output::submit(ID3D12Fence *handoff, UINT64 value, std::unique_ptr<Read
 }
 bool Dx12Output::copyFrame(ID3D12Resource *src, ID3D12Fence *fence, UINT64 done,
                            std::string &error) {
+  if (hmd_ && !validating)
+    return hmd_->copyFrame(src, fence, done, error);
   try {
     // A crashed worker must never leave an indefinite Wait on the host's queue.
     waitFor(fence, done, event_);
@@ -383,6 +406,12 @@ bool Dx12Output::copyFrame(ID3D12Resource *src, ID3D12Fence *fence, UINT64 done,
     return false;
   }
 }
+bool Dx12Output::blankHmd(std::string &error) {
+  return hmd_ && hmd_->blank(error);
+}
+bool Dx12Output::showCalibration(const std::vector<CalibrationMark> &marks, std::string &error) {
+  return hmd_ && hmd_->showCalibration(marks, error);
+}
 HRESULT Dx12Output::present() {
   if (composes())
     return compositionPresent_;
@@ -390,7 +419,7 @@ HRESULT Dx12Output::present() {
 }
 bool Dx12Output::saveFrame(const std::filesystem::path &path, std::string &error) {
   try {
-    if (chain_ || composes())
+    if (chain_ || composes() || hmd_)
       throw std::runtime_error("D3D12 readback requires offscreen output");
     auto desc = target()->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
@@ -447,11 +476,44 @@ bool Dx12Output::saveFrame(const std::filesystem::path &path, std::string &error
     return false;
   }
 }
+PlayerOutput::PlayerOutput() = default;
+PlayerOutput::~PlayerOutput() = default;
+
+void PlayerOutput::releaseResources() noexcept {
+  dx12_.reset();
+  hmd11_.reset();
+  NativeRenderer::releaseResources();
+}
+
+bool PlayerOutput::deviceLost() const {
+  return dx12_ ? dx12_->deviceLost() : NativeRenderer::deviceLost() ||
+      (hmd11_ && FAILED(hmd11_->device()->GetDeviceRemovedReason()));
+}
+
 bool PlayerOutput::initialize(HWND window, unsigned w, unsigned h, bool offscreen,
                               std::string &error, bool hardware, GpuPreference preference,
-                              bool use12, bool allowComposition) {
+                              bool use12, bool allowComposition, const std::wstring &hmdPath) {
   releaseResources();
   result_ = S_OK;
+  if (!hmdPath.empty()) {
+    if (use12) {
+      auto output = std::make_unique<Dx12Output>();
+      if (!output->initializeHmd(hmdPath, error)) return false;
+      dx12_ = std::move(output);
+      return true;
+    }
+    auto output = HmdOutput::open(hmdPath, error);
+    if (!output) return false;
+    const auto adapter = output->adapterLuid();
+    if (!NativeRenderer::initialize(nullptr, HmdOutput::Width, HmdOutput::Height, true, error,
+                                   true, preference, &adapter) ||
+        !output->initializeD3D11Bridge(device(), context(), error)) {
+      NativeRenderer::releaseResources();
+      return false;
+    }
+    hmd11_ = std::move(output);
+    return true;
+  }
   if (!use12)
     return NativeRenderer::initialize(window, w, h, offscreen, error, hardware, preference);
   if (!offscreen && allowComposition) {
@@ -469,7 +531,18 @@ bool PlayerOutput::initialize(HWND window, unsigned w, unsigned h, bool offscree
   dx12_ = std::move(next);
   return true;
 }
+bool PlayerOutput::blankHmd(std::string &error) {
+  return hmd11_ ? hmd11_->blank(error) : dx12_ && dx12_->blankHmd(error);
+}
+bool PlayerOutput::showCalibration(const std::vector<CalibrationMark> &marks, std::string &error) {
+  return hmd11_ ? hmd11_->showCalibration(marks, error) : dx12_ && dx12_->showCalibration(marks, error);
+}
 bool PlayerOutput::present(std::string &error) {
+  if (hmd11_) {
+    if (!hmd11_->presentD3D11(outputTexture(), error)) return false;
+    ++completed_;
+    return true;
+  }
   if (!dx12_)
     return NativeRenderer::present(error);
   result_ = dx12_->present();

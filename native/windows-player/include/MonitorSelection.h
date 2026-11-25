@@ -16,9 +16,11 @@ struct Monitor {
   RECT work{};
   bool primary = false;
   DisplayIdentity identity;
+  bool hmd = false;
 };
 
 std::vector<Monitor> monitors();
+std::wstring displaySerialFromEdid(const std::vector<BYTE> &edid);
 
 // Resolve a physical target. Automatic selection is for a fresh installation.
 const Monitor *resolveMonitor(const std::vector<Monitor> &list, const DisplayIdentity &wanted,

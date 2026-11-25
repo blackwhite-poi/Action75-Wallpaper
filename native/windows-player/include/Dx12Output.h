@@ -5,6 +5,8 @@
 #include <dxgi1_6.h>
 
 namespace action75 {
+class HmdOutput;
+struct CalibrationMark;
 class Dx12CompositionSurface {
 public:
   Dx12CompositionSurface() = default;
@@ -28,9 +30,13 @@ public:
                   std::string &error);
   bool initializeComposition(HWND window, unsigned w, unsigned h, GpuPreference preference,
                              std::string &error);
+  bool initializeHmd(const std::wstring &path, std::string &error);
   bool retargetComposition(HWND window, std::string &error);
   bool composes() const { return composition_ != nullptr; }
   bool hasWindowPresentation() const { return chain_ || composes(); }
+  bool blankHmd(std::string &error);
+  bool showCalibration(const std::vector<CalibrationMark> &marks, std::string &error);
+  bool usesHmd() const { return hmd_ != nullptr; }
   LUID compositionAdapter() const { return compositionAdapter_; }
   std::shared_ptr<Dx12CompositionSurface> makeCompositionSurface(std::string &error);
   bool showComposition(const std::shared_ptr<Dx12CompositionSurface> &surface, std::string &error);
@@ -68,6 +74,7 @@ private:
   LUID compositionAdapter_{};
   HRESULT compositionPresent_ = S_OK;
   std::unique_ptr<Readback> readback_;
+  std::unique_ptr<HmdOutput> hmd_;
   UINT64 submitted_ = 0;
   HANDLE event_ = nullptr;
   void begin();
@@ -78,14 +85,16 @@ private:
 
 class PlayerOutput : public NativeRenderer {
 public:
+  PlayerOutput();
+  ~PlayerOutput();
   Dx12Output *dx12() const { return dx12_.get(); }
+  bool blankHmd(std::string &error);
+  bool showCalibration(const std::vector<CalibrationMark> &marks, std::string &error);
+  bool usesHmd() const { return hmd11_ || (dx12_ && dx12_->usesHmd()); }
   bool initialize(HWND window, unsigned w, unsigned h, bool offscreen, std::string &error,
                   bool hardware = false, GpuPreference preference = GpuPreference::Discrete,
-                  bool use12 = false, bool allowComposition = true);
-  void releaseResources() noexcept {
-    dx12_.reset();
-    NativeRenderer::releaseResources();
-  }
+                  bool use12 = false, bool allowComposition = true, const std::wstring &hmdPath = {});
+  void releaseResources() noexcept;
   bool resize(unsigned w, unsigned h, std::string &error) {
     return dx12_ ? dx12_->resize(w, h, error) : NativeRenderer::resize(w, h, error);
   }
@@ -104,7 +113,7 @@ public:
   bool hasRenderTarget() const {
     return dx12_ ? dx12_->width != 0 : NativeRenderer::hasRenderTarget();
   }
-  bool deviceLost() const { return dx12_ ? dx12_->deviceLost() : NativeRenderer::deviceLost(); }
+  bool deviceLost() const;
   bool present(std::string &error);
   HRESULT lastPresentResult() const {
     return dx12_ ? result_ : NativeRenderer::lastPresentResult();
@@ -118,6 +127,7 @@ public:
   }
 private:
   std::unique_ptr<Dx12Output> dx12_;
+  std::unique_ptr<HmdOutput> hmd11_;
   HRESULT result_ = S_OK;
   uint64_t completed_ = 0, busy_ = 0;
 };

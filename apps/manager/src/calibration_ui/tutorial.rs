@@ -3,7 +3,7 @@ use eframe::egui::{
     self, Align, Align2, FontId, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2,
 };
 
-pub(super) fn show(ui: &mut egui::Ui) {
+pub(super) fn show(ui: &mut egui::Ui, hmd: bool) {
     let width = ui.available_width().min(768.);
     ui.add_space(16.);
     ui.vertical_centered(|ui| {
@@ -29,10 +29,10 @@ pub(super) fn show(ui: &mut egui::Ui) {
                         ui.horizontal_top(|ui| {
                             diagram(ui);
                             ui.add_space(9.);
-                            ui.vertical(instructions);
+                            ui.vertical(|ui| instructions(ui, hmd));
                         });
                     } else {
-                        instructions(ui);
+                        instructions(ui, hmd);
                         ui.add_space(4.);
                         diagram(ui);
                     }
@@ -41,10 +41,15 @@ pub(super) fn show(ui: &mut egui::Ui) {
     });
 }
 
-fn instructions(ui: &mut egui::Ui) {
+fn instructions(ui: &mut egui::Ui, hmd: bool) {
     ui.spacing_mut().item_spacing.y = 4.;
     ui.label(RichText::new("校准教程").size(17.));
-    ui.label(RichText::new("看向键盘副屏，把校准框拖到对应实体键帽正下方，对齐中心。").size(13.));
+    let align = if hmd {
+        "在桌面拖动校准框，让键盘副屏上的十字对齐对应键帽的中心。"
+    } else {
+        "看向键盘副屏，把校准框拖到对应实体键帽正下方，对齐中心。"
+    };
+    ui.label(RichText::new(align).size(13.));
     ui.label(
         RichText::new("选中后按方向键微调 1 像素，Shift + 方向键移动 10 像素。")
             .size(13.)

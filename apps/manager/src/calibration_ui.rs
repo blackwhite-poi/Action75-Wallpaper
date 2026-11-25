@@ -52,6 +52,7 @@ struct CalibrationDisplay {
     identity: String,
     serial: String,
     bounds: [i32; 4],
+    hmd: bool,
 }
 
 impl CalibrationDisplay {
@@ -73,6 +74,7 @@ impl CalibrationDisplay {
                 .unwrap_or_default()
                 .to_owned(),
             bounds: monitor_bounds(monitor)?,
+            hmd: monitor["hmd"] == true,
         })
     }
 
@@ -105,6 +107,8 @@ struct Session {
     display_check_pending: bool,
     next_display_check: Instant,
     placement: Placement,
+    preview_sent: Option<Value>,
+    preview_pending: bool,
 }
 impl Session {
     fn new(prepared: Prepared) -> Self {
@@ -120,6 +124,8 @@ impl Session {
             display_check_pending: false,
             next_display_check: Instant::now() + DISPLAY_CHECK_INTERVAL,
             placement: Placement::default(),
+            preview_sent: None,
+            preview_pending: false,
         }
     }
 
@@ -131,6 +137,7 @@ impl Session {
                 self.display_issue = None;
                 if changed {
                     self.placement = Placement::default();
+                    self.preview_sent = None;
                     self.drag = None;
                 }
                 changed
@@ -138,6 +145,7 @@ impl Session {
             Err(error) => {
                 self.display_issue = Some(error);
                 self.placement = Placement::default();
+                self.preview_sent = None;
                 self.drag = None;
                 true
             }
@@ -204,6 +212,7 @@ struct Prepared {
 enum Work {
     Begin(u64),
     CheckDisplay(u64),
+    Preview(u64, Value),
     Save(u64, Calibration),
     End(u64),
     Shutdown(mpsc::Sender<()>),
@@ -211,6 +220,7 @@ enum Work {
 enum Reply {
     Begun(u64, Result<Prepared, String>),
     DisplayChecked(u64, Result<CalibrationDisplay, String>),
+    Previewed(u64, Result<(), String>),
     Saved(u64, Result<Calibration, String>),
     Ended(u64, Result<(), String>),
 }
@@ -218,6 +228,9 @@ enum Reply {
 trait Backend: Send + 'static {
     fn begin(&mut self) -> Result<Prepared, String>;
     fn check_display(&self) -> Result<CalibrationDisplay, String>;
+    fn preview(&mut self, _points: Value) -> Result<(), String> {
+        Ok(())
+    }
     fn save(&mut self, model: &Calibration) -> Result<Calibration, String>;
     fn end(&mut self) -> Result<(), String>;
 }
@@ -350,6 +363,16 @@ impl Backend for Host {
         original.confirm(read_calibration_display(&self.root, player)?)
     }
 
+    fn preview(&mut self, points: Value) -> Result<(), String> {
+        let player = self.paused.as_ref().ok_or("校准会话已结束")?;
+        core::command(
+            &self.root,
+            json!({"action":"previewCalibration","expectedPlayerPid":player.pid,
+                   "ownerPid":std::process::id(),"points":points}),
+        )
+        .map(|_| ())
+    }
+
     fn save(&mut self, model: &Calibration) -> Result<Calibration, String> {
         if let Some(player) = &self.paused {
             self.check_display()?;
@@ -376,6 +399,7 @@ fn worker<B: Backend>(
         let reply = match job {
             Work::Begin(g) => Reply::Begun(g, backend.begin()),
             Work::CheckDisplay(g) => Reply::DisplayChecked(g, backend.check_display()),
+            Work::Preview(g, points) => Reply::Previewed(g, backend.preview(points)),
             Work::Save(g, model) => Reply::Saved(g, backend.save(&model)),
             Work::End(g) => Reply::Ended(g, backend.end()),
             Work::Shutdown(done) => {
@@ -573,6 +597,14 @@ impl Controller {
                             }
                         }
                     }
+                    Reply::Previewed(g, result) if g == s.generation => {
+                        if let Some(session) = s.session.as_mut() {
+                            session.preview_pending = false;
+                            if let Err(error) = result {
+                                s.error = error;
+                            }
+                        }
+                    }
                     Reply::Saved(g, result) if g == s.generation && s.phase == Phase::Saving => {
                         s.phase = if s.session.is_some() {
                             Phase::Active
@@ -641,6 +673,21 @@ impl Controller {
             let Some(session) = s.session.as_mut() else {
                 return;
             };
+            if session.display.hmd && session.display_issue.is_none() && !session.preview_pending {
+                let points = Value::Array(
+                    session.model.points.iter().map(|(code, point)| {
+                        json!([point.x, point.y, session.selected.as_ref() == Some(code)])
+                    }).collect(),
+                );
+                if session.preview_sent.as_ref() != Some(&points)
+                    && self.tx.as_ref().is_some_and(|tx| {
+                        tx.send(Work::Preview(generation, points.clone())).is_ok()
+                    })
+                {
+                    session.preview_sent = Some(points);
+                    session.preview_pending = true;
+                }
+            }
             if session.display_check_pending {
                 return;
             }
@@ -686,6 +733,7 @@ impl Controller {
     pub fn show_page(&mut self, ui: &mut egui::Ui, status: &Value, monitors: &[Value]) {
         let running = status["running"] == true;
         let connected = running && status["monitorConnected"] == true;
+        let hmd = status["hmdSelected"] == true;
         self.observe_revision(
             status["calibrationRevision"].as_str(),
             status["calibrationError"].is_string(),
@@ -735,7 +783,7 @@ impl Controller {
             if matches!(s.phase, Phase::Starting | Phase::Active)
                 || (s.phase == Phase::Saving && s.session.is_some())
             {
-                tutorial::show(ui);
+                tutorial::show(ui, hmd);
             }
         };
         let mut show_controls = |ui: &mut egui::Ui| {
@@ -760,7 +808,7 @@ impl Controller {
                 response
             };
 
-            show_manual_controls(ui, &s, running, connected, &mut button);
+            show_manual_controls(ui, &s, running, connected, hmd, &mut button);
             ui.add_space(9.);
             ui.separator();
             ui.add_space(8.);
@@ -920,19 +968,23 @@ impl Controller {
         }
         let generation = s.generation;
         let bounds = session.display.bounds;
+        let hmd = session.display.hmd;
         drop(s);
         let title = board_title(generation);
         let state = self.state.clone();
+        let width = if hmd { 800. } else { bounds[2] as f32 };
+        let height = width * bounds[3] as f32 / bounds[2] as f32;
+        let builder = egui::ViewportBuilder::default()
+            .with_title(&title)
+            .with_visible(hmd)
+            .with_decorations(hmd)
+            .with_resizable(false)
+            .with_inner_size([width, height])
+            .with_active(hmd)
+            .with_window_level(egui::WindowLevel::AlwaysOnTop);
         ctx.show_viewport_deferred(
             viewport_id(generation),
-            egui::ViewportBuilder::default()
-                .with_title(&title)
-                .with_visible(false)
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_inner_size([bounds[2] as f32, bounds[3] as f32])
-                .with_active(false)
-                .with_window_level(egui::WindowLevel::AlwaysOnTop),
+            builder,
             move |ctx, class| {
                 let mut s = state.lock().unwrap();
                 if s.generation != generation
@@ -951,6 +1003,14 @@ impl Controller {
                 } else {
                     let active = s.phase == Phase::Active;
                     let session = s.session.as_mut().unwrap();
+                    if hmd {
+                        if !session.placement.visible {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                            session.placement.visible = true;
+                        }
+                        draw_canvas(ctx, session, active);
+                        return;
+                    }
                     match session.placement.prepare(ctx, &session.display, &title) {
                         Ok(true) => {
                             draw_canvas(ctx, session, active);
@@ -986,6 +1046,7 @@ fn show_manual_controls(
     s: &State,
     running: bool,
     connected: bool,
+    hmd: bool,
     button: &mut impl FnMut(&mut egui::Ui, &'static str, Action, bool) -> egui::Response,
 ) {
     ui.label(RichText::new("手动校准").size(17.));
@@ -996,7 +1057,11 @@ fn show_manual_controls(
     let hint = if let Some(issue) = issue {
         issue
     } else if connected || s.session.is_some() {
-        "在键盘屏拖动键位，用方向键微调。"
+        if hmd {
+            "在桌面校准窗口拖动键位，Action75 同步显示标记。"
+        } else {
+            "在键盘屏拖动键位，用方向键微调。"
+        }
     } else {
         "在「设备与输出」中连接键盘屏。"
     };
@@ -1588,6 +1653,7 @@ mod tests {
                 identity: "original-port".into(),
                 serial: "serial-1".into(),
                 bounds: [-1920, 0, 1920, 720],
+                hmd: false,
             },
         }
     }

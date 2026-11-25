@@ -1,6 +1,7 @@
 #include "FireworksScene.h"
 #include "Diagnostics.h"
 #include "DisplayGuard.h"
+#include "HmdOutput.h"
 #include "DesktopWallpaperLayer.h"
 #include "EffectPalette.h"
 #include "EffekseerBackend.h"
@@ -198,6 +199,7 @@ struct Options {
   fs::path root, stateDir;
   std::wstring pipe, rootEndpoint;
   std::string command;
+  std::optional<bool> switchDisplayMode;
   bool selfTest = false, headless = false, probe = false, hardwareHeadless = false,
        perfStats = false, dx12PresentStats = false;
   bool preferVolumeAtlas = false, backdropCopy = true;
@@ -225,6 +227,12 @@ static Options options() {
       o.explicitPipe = true;
     } else if (arg == L"--command")
       o.command = utf8(value());
+    else if (arg == L"--switch-action75-mode") {
+      const auto mode = value();
+      if (mode != L"hmd" && mode != L"extended")
+        throw std::runtime_error("Expected Action75 mode: hmd or extended");
+      o.switchDisplayMode = mode == L"hmd";
+    }
     else if (arg == L"--self-test")
       o.selfTest = true;
     else if (arg == L"--headless-test")
@@ -546,12 +554,17 @@ private:
   void claimExitShortcut(HWND window);
   void registerTrayIcon();
   void saveSettings();
+  std::vector<Monitor> availableMonitors() const {
+    auto displays = monitors();
+    if (!options_.headless && !options_.importTrial) appendHmdMonitors(displays);
+    return displays;
+  }
   void chooseMonitor(bool persistBinding = false) {
-    chooseMonitor(persistBinding, testMonitors_ ? *testMonitors_ : monitors());
+    chooseMonitor(persistBinding, testMonitors_ ? *testMonitors_ : availableMonitors());
   }
   void chooseMonitor(bool persistBinding, const std::vector<Monitor> &displays);
   bool offscreenOnly() const { return options_.headless && !testMonitors_; }
-  bool usesOutputWindow() const { return !options_.headless || options_.testWindow != TestWindow::None; }
+  bool usesOutputWindow() const { return !hmdSelected_ && (!options_.headless || options_.testWindow != TestWindow::None); }
   bool gpuDeviceLost() const {
     return renderer_.deviceLost() || (scene_.plugin && scene_.plugin->compositionDeviceLost());
   }
@@ -651,9 +664,11 @@ private:
   bool exitShortcut_ = false, quittingSession_ = false;
   UINT taskbarCreated_ = 0;
   HICON icon_ = nullptr;
+  std::optional<std::vector<CalibrationMark>> calibrationPreview_;
   bool hasMonitor_ = false, paused_ = false, visible_ = true, dirty_ = true;
   bool persistedPaused_ = false;
   bool exclusiveDisplay_ = false;
+  bool hmdSelected_ = false;
   bool hideKeyboardTaskbar_ = false;
   bool keyboardTaskbarFailed_ = false;
   bool keyboardZOrderTimer_ = false;
@@ -715,7 +730,8 @@ json Player::status() const {
       {"nativeWorkerAbi", scene_.plugin ? scene_.plugin->renderAbi() : 0},
       {"hostD3D11Device", renderer_.device() != nullptr},
       {"hostD3D12Device", renderer_.dx12() && renderer_.dx12()->device()},
-      {"dx12Presentation", !renderer_.dx12() ? "none" : renderer_.dx12()->composes() ?
+      {"dx12Presentation", renderer_.usesHmd() && renderer_.dx12() ? "display-core" :
+                               !renderer_.dx12() ? "none" : renderer_.dx12()->composes() ?
                                "worker-composition" : "shared-copy"},
       {"runtimeRoot", utf8(options_.root.wstring())},
       {"inputElevated", processElevated()},
@@ -767,12 +783,15 @@ json Player::status() const {
       {"packSettingsRevision", activeProfile_ ? activeProfile_->revision : 0},
       {"importedRevision", activeImportedPack_ ? activeImportedPack_->importedRevision : ""},
       {"deviceGroup", mapping_.deviceGroup},
+      {"calibrationPreviewActive", temporaryPauseOwner_ && calibrationPreview_ && renderer_.usesHmd()},
       {"calibrationRevision", mapping_.revision},
       {"calibrationError", mapping_.calibrationError.empty() ? json(nullptr)
                                                              : json(mapping_.calibrationError)},
       {"calibratedKeys", mapping_.keys.size()},
       {"monitorDevice", monitorDevice_},
       {"monitorConnected", hasMonitor_},
+      {"hmdSelected", hmdSelected_},
+      {"hmdOutput", renderer_.usesHmd()},
       {"outputReady", outputReady()},
       {"monitorError", monitorError_.empty() ? json(nullptr) : json(monitorError_)},
       {"exclusiveDisplay", exclusiveDisplay_},
@@ -840,7 +859,7 @@ json Player::listMonitors(const std::vector<Monitor> &displays) const {
     list.push_back({{"device", id},
                     {"monitorIdentity", utf8(m.identity.path)},
                     {"monitorSerial", utf8(m.identity.serial)},
-                    {"label", std::string(m.primary ? "主屏"
+                    {"label", std::string(m.hmd ? "Action75 HMD" : m.primary ? "主屏"
                                                     : (width == 1920 && height == 720 ? "键盘屏候选"
                                                                                       : "显示器")) +
                                   " · " + std::to_string(width) + " × " + std::to_string(height)},
@@ -849,6 +868,7 @@ json Player::listMonitors(const std::vector<Monitor> &displays) const {
                     {"x", m.bounds.left},
                     {"y", m.bounds.top},
                     {"primary", m.primary},
+                    {"hmd", m.hmd},
                     {"selected", &m == selected && id == monitorDevice_}});
   }
   return list;
@@ -1124,7 +1144,7 @@ void Player::refreshDesktopLayer() {
     SetTimer(window_,MonitorTopologyTimer,1000,nullptr);
     return;
   }
-  desktopLayer_.show(visible_ && outputReady() && !packId_.empty());
+  desktopLayer_.show(visible_ && !temporaryPauseOwner_ && outputReady() && !packId_.empty());
 }
 
 void Player::updateProfile(PackSettingsCandidate &profile, const PackAppearance &appearance,
@@ -1212,11 +1232,13 @@ void Player::chooseMonitor(bool persistBinding, const std::vector<Monitor> &list
   const auto *chosen = resolveMonitor(list, monitorIdentity_, storedMonitorDevice_.empty());
   RECT previousBounds{};
   const bool sameOutput = chosen && hasMonitor_ && monitorDevice_ == utf8(chosen->device) &&
-                          GetWindowRect(window_, &previousBounds) &&
-                          EqualRect(&previousBounds, &chosen->bounds);
+                          hmdSelected_ == chosen->hmd &&
+                          (chosen->hmd || (GetWindowRect(window_, &previousBounds) &&
+                                           EqualRect(&previousBounds, &chosen->bounds)));
   if (!sameOutput)
     resetPluginPointer();
   hasMonitor_ = chosen != nullptr;
+  hmdSelected_ = chosen && chosen->hmd;
   monitorDevice_.clear();
   monitorError_.clear();
   if (chosen) {
@@ -1255,6 +1277,9 @@ void Player::chooseMonitor(bool persistBinding, const std::vector<Monitor> &list
   if (monitorSuspendAt_ && (pluginRecoveryPending_ || gpuDeviceLost()))
     graphicsSuspended_ = true;
   monitorSuspendAt_.reset();
+  if ((renderer_.device() || renderer_.dx12()) &&
+      (renderer_.usesHmd() != hmdSelected_ || (hmdSelected_ && !sameOutput)))
+    graphicsSuspended_ = true;
   RECT r = chosen->bounds;
   unsigned width = r.right - r.left, height = r.bottom - r.top;
   const auto retryOutput = [&](const std::string &error) {
@@ -1303,14 +1328,15 @@ void Player::updateVisibility() {
   }
   if (!pluginPointerEnabled())
     resetPluginPointer();
-  if (desktopActive_) desktopLayer_.show(visible_ && outputReady() && !packId_.empty());
+  if (desktopActive_) desktopLayer_.show(visible_ && !temporaryPauseOwner_ && outputReady() && !packId_.empty());
   if (window_ && options_.testWindow != TestWindow::None) {
     const bool showing = !desktopActive_ && visible_ && outputReady() && !packId_.empty();
     if (showing != (IsWindowVisible(window_) != FALSE))
       ShowWindow(window_, showing ? SW_SHOWNOACTIVATE : SW_HIDE);
   }
   if (window_ && !options_.headless) {
-    const bool showing = !desktopActive_ && visible_ && outputReady() && !packId_.empty();
+    const bool showing = usesOutputWindow() && !desktopActive_ && visible_ && !temporaryPauseOwner_ &&
+                         outputReady() && !packId_.empty();
     const auto style = GetWindowLongPtrW(window_, GWL_EXSTYLE);
     const bool pointerInteraction = pluginPointerEnabled() || canClickScene();
     const auto pointerStyle = pointerInteraction ? style & ~WS_EX_TRANSPARENT
@@ -1342,12 +1368,12 @@ void Player::refreshDisplayGuard() {
   // disabled. A normal pause keeps the static wallpaper protected; calibration
   // suspends it.
   displayGuard_.configure(window_, wide(monitorDevice_), monitorIdentity_,
-                          exclusiveDisplay_ && visible_ && !packId_.empty(),
+                          !hmdSelected_ && exclusiveDisplay_ && visible_ && !packId_.empty(),
                           temporaryPauseOwner_ != nullptr || (hasMonitor_ && !outputReady()));
 }
 void Player::refreshKeyboardTaskbar() {
   RECT bounds{};
-  if (hideKeyboardTaskbar_ && !quittingSession_ && usesOutputWindow() && visible_ &&
+  if (hideKeyboardTaskbar_ && !quittingSession_ && !temporaryPauseOwner_ && usesOutputWindow() && visible_ &&
       outputReady() && !packId_.empty() && GetWindowRect(window_, &bounds)) {
     keyboardTaskbarFailed_ = !keyboardTaskbar_.hide(window_, bounds);
   } else {
@@ -1560,8 +1586,9 @@ bool Player::initializeOutput(bool use12, unsigned width, unsigned height, bool 
                               std::string &error, bool allowComposition) {
   const bool offscreen = temporary || !usesOutputWindow() || options_.importTrial;
   const bool hardware = temporary || options_.hardwareHeadless || (options_.importTrial && use12);
+  const auto hmdPath = hmdSelected_ && !temporary ? monitorIdentity_.path : std::wstring{};
   if (!renderer_.initialize(window_, width, height, offscreen, error, hardware, gpuPreference_,
-                            use12, allowComposition && options_.testWindow != TestWindow::Shared))
+                            use12, allowComposition && options_.testWindow != TestWindow::Shared, hmdPath))
     return false;
   diagnostics_.write("INFO", std::string(renderer_.dx12() ? "D3D12 adapter " : "D3D11 adapter ") +
                                 utf8(renderer_.adapterName()));
@@ -1996,11 +2023,11 @@ json Player::dispatch(const json &request) {
         perf_->reset();
       result = {{"status", status()}, {"performance", perf_->snapshot(renderer_.context())}};
     } else if (action == "refreshDevices") {
-      const auto displays = monitors();
+      const auto displays = availableMonitors();
       chooseMonitor(true, displays);
       result = {{"monitors", listMonitors(displays)}, {"devices", listDevices(true)}};
     } else if (action == "listMonitors")
-      result = listMonitors(monitors());
+      result = listMonitors(availableMonitors());
     else if (action == "listDevices")
       result = listDevices();
     else if (action == "listPalettes")
@@ -2082,7 +2109,7 @@ json Player::dispatch(const json &request) {
         throw std::runtime_error("Hide keyboard taskbar must be a boolean");
       const bool hideKeyboardTaskbar = changes.value("hideKeyboardTaskbar", hideKeyboardTaskbar_);
       if (monitorChanged && !monitor.empty()) {
-        const auto all = monitors();
+        const auto all = availableMonitors();
         const auto selected = std::find_if(all.begin(), all.end(), [&](const Monitor &item) {
           return utf8(item.device) == monitor;
         });
@@ -2171,6 +2198,29 @@ json Player::dispatch(const json &request) {
         error_ = std::string("Settings applied for this session: ") + exception.what();
       }
       result = status();
+    } else if (action == "previewCalibration") {
+      if (!temporaryPauseOwner_ || request.at("ownerPid").get<DWORD>() != temporaryPauseOwnerPid_)
+        throw std::runtime_error("Calibration preview does not own the player pause");
+      const auto &points = request.at("points");
+      if (!points.is_array() || points.size() > 128)
+        throw std::runtime_error("Invalid calibration preview points");
+      std::vector<CalibrationMark> marks;
+      marks.reserve(points.size());
+      for (const auto &point : points) {
+        if (!point.is_array() || point.size() != 3 || !point[0].is_number() ||
+            !point[1].is_number() || !point[2].is_boolean())
+          throw std::runtime_error("Invalid calibration preview point");
+        const float x = point[0].get<float>(), y = point[1].get<float>();
+        if (!std::isfinite(x) || !std::isfinite(y) || x < 0 || x > 1 || y < 0 || y > 1)
+          throw std::runtime_error("Invalid calibration preview coordinates");
+        marks.push_back({x, y, point[2].get<bool>()});
+      }
+      if (hmdSelected_ && !renderer_.hasRenderTarget() && !graphicsSuspended_ &&
+          !initializeOutput(true, HmdOutput::Width, HmdOutput::Height, false, error_))
+        throw std::runtime_error(error_);
+      calibrationPreview_ = std::move(marks);
+      dirty_ = true;
+      result = status();
     } else if (action == "pause" || action == "resume") {
       const bool temporary = request.value("temporary", false);
       if (temporary && action == "pause") {
@@ -2185,12 +2235,14 @@ json Player::dispatch(const json &request) {
           CloseHandle(temporaryPauseOwner_);
         temporaryPauseOwner_ = owner;
         temporaryPauseOwnerPid_ = pid;
+        calibrationPreview_.reset();
       } else if (temporary) {
         if (temporaryPauseOwner_ &&
             request.value("ownerPid", temporaryPauseOwnerPid_) == temporaryPauseOwnerPid_) {
           CloseHandle(temporaryPauseOwner_);
           temporaryPauseOwner_ = nullptr;
           temporaryPauseOwnerPid_ = 0;
+          calibrationPreview_.reset();
         }
       } else {
         persistedPaused_ = action == "pause";
@@ -2204,9 +2256,13 @@ json Player::dispatch(const json &request) {
         saveSettings();
       result = status();
     } else if (action == "hide" || action == "show") {
+      const bool hiding = visible_ && action == "hide";
       visible_ = action == "show";
-      if (!visible_)
+      if (!visible_) {
         stopEffects();
+        if (hiding && renderer_.usesHmd() && !renderer_.blankHmd(error_))
+          diagnostics_.write("WARN", error_);
+      }
       updateVisibility();
       saveSettings();
       result = status();
@@ -2316,7 +2372,7 @@ void Player::resetPluginPointer(bool cancel) {
     sendPluginEvent(A75_INPUT_RESET);
 }
 bool Player::pluginPointerEnabled() const {
-  return scene_.plugin && !desktopActive_ && !options_.headless && visible_ && outputReady() && !paused_;
+  return scene_.plugin && !desktopActive_ && usesOutputWindow() && !options_.headless && visible_ && outputReady() && !paused_;
 }
 void Player::pluginFailed() {
   const bool deviceLost = gpuDeviceLost();
@@ -2393,7 +2449,7 @@ bool Player::sendPluginEvent(uint32_t type, float x, float y, const char *code, 
   return true;
 }
 bool Player::canClickScene() const {
-  return (scene_.water || scene_.fireworks || effectPlayback_) && !options_.headless && visible_ &&
+  return (scene_.water || scene_.fireworks || effectPlayback_) && usesOutputWindow() && !options_.headless && visible_ &&
          outputReady() && !paused_;
 }
 std::array<float, 2> Player::pointerPosition(POINT client) const {
@@ -2825,6 +2881,17 @@ void Player::render() {
   auto now = std::chrono::steady_clock::now();
   float elapsed = std::chrono::duration<float>(now - lastFrame_).count();
   lastFrame_ = now;
+  if (temporaryPauseOwner_ && calibrationPreview_ && renderer_.usesHmd()) {
+    if (renderer_.showCalibration(*calibrationPreview_, error_))
+      ++framesRendered_;
+    else if (gpuDeviceLost())
+      scheduleDeviceRecovery(error_);
+    else
+      diagnostics_.write("WARN", error_);
+    dirty_ = false;
+    pacer_.rendered(now, renderFps(), false, phaseReset);
+    return;
+  }
   auto begin = now;
   if (perf_)
     perf_->begin(renderer_.context());
@@ -3167,6 +3234,7 @@ int Player::run() {
       CloseHandle(temporaryPauseOwner_);
       temporaryPauseOwner_ = nullptr;
       temporaryPauseOwnerPid_ = 0;
+      calibrationPreview_.reset();
       paused_ = persistedPaused_;
       updateVisibility();
       lastFrame_ = FramePacer::Clock::now();
@@ -3205,7 +3273,7 @@ int Player::run() {
     auto plan = deviceRetryAt_
         ? FramePacer::Plan{false, true, *deviceRetryAt_ - now}
         : pacer_.plan(now, renderer_.hasRenderTarget() &&
-                               (offscreenOnly() || (visible_ && outputReady())),
+                               (offscreenOnly() || ((visible_ || (temporaryPauseOwner_ && calibrationPreview_ && hmdSelected_)) && outputReady())),
                       dirty_, hasMotion(), requestedInterval);
     const auto wallpaperRetryAt = canRetryWallpaper
         ? std::optional{missingWallpaper_->retryAt} : std::nullopt;
@@ -3359,10 +3427,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   if (const auto helper = KeyboardTaskbar::runHelper())
     return *helper;
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   HANDLE single = nullptr;
   try {
     auto o = options();
+    if (o.switchDisplayMode) {
+      const auto restartedAdapter = switchAction75DisplayMode(*o.switchDisplayMode);
+      stdoutJson({{"ok", true}, {"adapterRestarted", restartedAdapter}});
+      if (SUCCEEDED(com))
+        CoUninitialize();
+      return 0;
+    }
     if (o.importTrial) {
       SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
       const auto resultFile = o.root / L"trial-result.json";
@@ -3402,11 +3477,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         throw std::runtime_error("Cannot enumerate keyboard devices");
       for (const auto &d : *devices)
         out["devices"].push_back({{"id", utf8(d.path)}, {"selected", d.selected}});
-      for (const auto &m : monitors())
+      auto displays = monitors();
+      appendHmdMonitors(displays);
+      for (const auto &m : displays)
         out["monitors"].push_back({{"device", utf8(m.device)},
                                    {"width", m.bounds.right - m.bounds.left},
                                    {"height", m.bounds.bottom - m.bounds.top},
-                                   {"primary", m.primary}});
+                                   {"primary", m.primary}, {"hmd", m.hmd}});
       stdoutJson({{"ok", true}, {"result", out}});
       if (SUCCEEDED(com))
         CoUninitialize();

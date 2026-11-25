@@ -118,14 +118,14 @@ endif()
 set_target_properties(Action75WallpaperWorker PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<1:${ACTION75_DIST_DIR}/Action75Native>")
 foreach(host Action75Native Action75Perf)
     add_executable(${host} WIN32 cmake/ProcessHeap.manifest
-        src/main.cpp src/IpcServer.cpp src/Dx12Output.cpp src/KeyboardTaskbar.cpp
+        src/main.cpp src/IpcServer.cpp src/Dx12Output.cpp src/HmdOutput.cpp src/KeyboardTaskbar.cpp
         src/SpriteBurst.cpp src/KeycapEffect.cpp src/FieldEffect.cpp src/ProceduralBurst.cpp src/PixelFluid.cpp)
     target_include_directories(${host} PRIVATE include)
     target_link_libraries(${host} PRIVATE action75_pack_backdrop
         action75_input action75_settings action75_wallpaper_catalog action75_display_guard
         action75_effekseer_backend action75_water_surface action75_fireworks action75_glass_shatter
         action75_native_plugin d3d11 d3d12 dcomp dxgi d3dcompiler windowscodecs ole32 shell32 psapi advapi32
-        mfplat mfuuid mf oleaut32 shlwapi)
+        mfplat mfuuid mf oleaut32 shlwapi windowsapp)
     if(MSVC)
         target_link_libraries(${host} PRIVATE delayimp)
         target_link_options(${host} PRIVATE /DELAYLOAD:d3d11.dll /DELAYLOAD:d3d12.dll /DELAYLOAD:dcomp.dll)
@@ -272,8 +272,8 @@ add_test(NAME native_monitor_reconnect COMMAND python
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/monitor_reconnect.py" "$<TARGET_FILE:Action75Native>" "${ACTION75_ROOT}")
 set_tests_properties(native_monitor_reconnect PROPERTIES TIMEOUT 45)
 
-add_executable(action75_dx12_window_tests tests/Dx12WindowTest.cpp src/Dx12Output.cpp)
-target_link_libraries(action75_dx12_window_tests PRIVATE action75_pack_backdrop d3d12 dcomp)
+add_executable(action75_dx12_window_tests tests/Dx12WindowTest.cpp src/Dx12Output.cpp src/HmdOutput.cpp)
+target_link_libraries(action75_dx12_window_tests PRIVATE action75_pack_backdrop action75_display_guard d3d12 dcomp windowsapp)
 add_test(NAME native_dx12_window COMMAND action75_dx12_window_tests)
 set_tests_properties(native_dx12_window PROPERTIES TIMEOUT 20)
 add_test(NAME native_dx12_reconnect COMMAND python

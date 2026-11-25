@@ -39,7 +39,7 @@ public:
   bool setPluginTarget(ID3D11RenderTargetView *target);
   bool initialize(HWND window, unsigned width, unsigned height, bool offscreen,
                   std::string &error, bool hardwareOffscreen = false,
-                  GpuPreference preference = GpuPreference::Discrete);
+                  GpuPreference preference = GpuPreference::Discrete, const LUID *adapter = nullptr);
   void releaseResources() noexcept;
   bool resize(unsigned width, unsigned height, std::string &error);
   bool loadBackground(const std::filesystem::path &file, std::string &error,
@@ -89,7 +89,7 @@ public:
 private:
   bool initializeBackgroundPipeline(std::string &error);
   bool initializeResources(HWND window, unsigned width, unsigned height, bool offscreen,
-                           std::string &error, bool hardwareOffscreen, GpuPreference preference);
+                           std::string &error, bool hardwareOffscreen, GpuPreference preference, const LUID *requiredAdapter);
   using ComDevice = Microsoft::WRL::ComPtr<ID3D11Device>;
   ComDevice device_;
   uint64_t adapterLuid_ = 0;

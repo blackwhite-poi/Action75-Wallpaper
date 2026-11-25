@@ -123,6 +123,10 @@ std::vector<DisplayPath> activePaths() {
 }
 }
 
+std::wstring displaySerialFromEdid(const std::vector<BYTE> &edid) {
+  return serialFromEdid(edid);
+}
+
 std::vector<Monitor> monitors() {
   std::vector<Monitor> result;
   if (!EnumDisplayMonitors(nullptr, nullptr,

@@ -80,9 +80,9 @@ void NativeRenderer::releaseResources() noexcept {
 }
 bool NativeRenderer::initialize(HWND window, unsigned width, unsigned height,
                                 bool offscreen, std::string &error, bool hardwareOffscreen,
-                                GpuPreference preference) {
+                                GpuPreference preference, const LUID *requiredAdapter) {
   releaseResources();
-  if (!initializeResources(window, width, height, offscreen, error, hardwareOffscreen, preference)) {
+  if (!initializeResources(window, width, height, offscreen, error, hardwareOffscreen, preference, requiredAdapter)) {
     releaseResources();
     return false;
   }
@@ -101,7 +101,7 @@ bool NativeRenderer::initialize(HWND window, unsigned width, unsigned height,
 
 bool NativeRenderer::initializeResources(HWND window, unsigned width, unsigned height,
                                          bool offscreen, std::string &error, bool hardwareOffscreen,
-                                         GpuPreference preference) {
+                                         GpuPreference preference, const LUID *requiredAdapter) {
   offscreen_ = offscreen;
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
   const bool warp = offscreen && !hardwareOffscreen;
@@ -118,7 +118,14 @@ bool NativeRenderer::initializeResources(HWND window, unsigned width, unsigned h
   };
   HRESULT hr = E_FAIL;
   ComPtr<IDXGIFactory6> adapterFactory;
-  if (!warp && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&adapterFactory)))) {
+  if (requiredAdapter) {
+    ComPtr<IDXGIAdapter1> requested;
+    hr = CreateDXGIFactory1(IID_PPV_ARGS(&adapterFactory));
+    if (SUCCEEDED(hr))
+      hr = adapterFactory->EnumAdapterByLuid(*requiredAdapter, IID_PPV_ARGS(&requested));
+    if (SUCCEEDED(hr))
+      hr = createDevice(requested.Get(), D3D_DRIVER_TYPE_UNKNOWN);
+  } else if (!warp && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&adapterFactory)))) {
     const auto order = preference == GpuPreference::Integrated ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
                                                                : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
     for (UINT index = 0; ; ++index) {
@@ -134,7 +141,7 @@ bool NativeRenderer::initializeResources(HWND window, unsigned width, unsigned h
       }
     }
   }
-  if (FAILED(hr))
+  if (FAILED(hr) && !requiredAdapter)
     hr = createDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE);
   if (FAILED(hr)) {
     error = hrError("D3D11CreateDevice", hr);

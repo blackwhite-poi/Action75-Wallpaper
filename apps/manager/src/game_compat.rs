@@ -394,6 +394,22 @@ fn cancel_handoff(
         Err(format!("{reason}，请在管理员进程退出后重新连接播放器"))
     }
 }
+pub fn switch_display_mode(root: &Path, hmd: bool) -> Result<(), String> {
+    let args = [
+        "--root".to_owned(),
+        root.to_string_lossy().into_owned(),
+        "--switch-action75-mode".into(),
+        if hmd { "hmd" } else { "extended" }.into(),
+    ];
+    let process = win::run_as(&core::player(root), &args)?;
+    while !process.wait(Duration::from_secs(30))? {}
+    if process.exit_code()? == 0 {
+        Ok(())
+    } else {
+        Err("Windows 未能切换 Action75 输出模式，请确认副屏已连接后重试。".into())
+    }
+}
+
 pub fn elevate_and_wait(root: &Path) -> Result<(), String> {
     let h = Handoff::create()?;
     let result = (|| {
@@ -503,6 +519,7 @@ pub(crate) mod win {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
         fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
         fn GetProcessId(handle: isize) -> u32;
+        fn GetExitCodeProcess(handle: isize, code: *mut u32) -> i32;
         fn QueryFullProcessImageNameW(
             handle: isize,
             flags: u32,
@@ -534,6 +551,14 @@ pub(crate) mod win {
         }
     }
     impl Process {
+        pub fn exit_code(&self) -> Result<u32, String> {
+            let mut code = 0;
+            if unsafe { GetExitCodeProcess(self.0, &mut code) } == 0 {
+                Err(std::io::Error::last_os_error().to_string())
+            } else {
+                Ok(code)
+            }
+        }
         pub fn pid(&self) -> Result<u32, String> {
             let p = unsafe { GetProcessId(self.0) };
             if p == 0 {

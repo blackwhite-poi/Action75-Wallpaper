@@ -61,6 +61,7 @@ enum Restart {
     #[default]
     None,
     Graphics,
+    OutputMode(bool),
     Ordinary(OrdinaryAction),
 }
 
@@ -310,10 +311,18 @@ fn main() -> eframe::Result {
     }?;
     let restart = restart_on_exit.get();
     if restart != Restart::None {
-        // Release the normal instance lock before the replacement starts.
-        drop(instance);
         let mut switch_error = None;
         let settings = restart != Restart::Ordinary(OrdinaryAction::Import);
+        if let Restart::OutputMode(hmd) = restart {
+            // Release the controller's D3D device before Windows restarts the
+            // adapter. The separate wallpaper player recovers in place.
+            switch_error = game_compat::switch_display_mode(&root, hmd).err();
+            if let Some(error) = &switch_error {
+                core::storage::log(&root, "ERROR", error);
+            }
+        }
+        // Release the normal instance lock before the replacement starts.
+        drop(instance);
         if matches!(restart, Restart::Ordinary(_)) {
             let switched = game_compat::reopen(&root, settings);
             match switched {
@@ -328,7 +337,9 @@ fn main() -> eframe::Result {
         let result = std::env::current_exe().and_then(|exe| {
             let mut command = Command::new(exe);
             command.arg("--root").arg(&root);
-            if settings {
+            if matches!(restart, Restart::OutputMode(_)) {
+                command.arg("--devices");
+            } else if settings {
                 command.arg("--settings");
             }
             if game_compatible {
@@ -457,6 +468,7 @@ struct Manager {
     compat: Option<mpsc::Receiver<Result<(), String>>>,
     compat_replaced: bool,
     selecting: bool,
+    switching_display: bool,
     tab: u8,
     error: String,
     message: String,
@@ -727,6 +739,7 @@ impl Manager {
             compat: None,
             compat_replaced: false,
             selecting: false,
+            switching_display: false,
             tab: 0,
             error: String::new(),
             message: String::new(),
@@ -1075,14 +1088,21 @@ impl Manager {
                         Err(error) => self.error = format!("无法保存显卡设置，{error}"),
                     }
                 }
-                Event::RestartPrepared(result) => match result {
+                Event::RestartPrepared { output_mode, result } => match result {
                     Ok(()) => {
-                        self.restart_on_exit.set(Restart::Graphics);
+                        self.restart_on_exit.set(
+                            output_mode.map_or(Restart::Graphics, Restart::OutputMode),
+                        );
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     Err(error) => {
                         self.restart_pending = false;
-                        self.error = format!("无法重启软件，{error}");
+                        self.switching_display = false;
+                        self.error = if output_mode.is_some() {
+                            format!("无法准备切换 Action75 输出模式，{error}")
+                        } else {
+                            format!("无法重启软件，{error}")
+                        };
                     }
                 },
                 Event::SettingsAck { .. } | Event::SettingsFailed { .. } => {}
@@ -2496,16 +2516,24 @@ impl Manager {
     }
 
     fn request_restart(&mut self) {
+        self.prepare_restart(None);
+    }
+
+    fn prepare_restart(&mut self, output_mode: Option<bool>) {
         if self.profile_save_error.is_some() {
             return;
         }
         self.error.clear();
-        match self.tx.send(Job::PrepareRestart(self.profile.finish(true))) {
+        match self.tx.send(Job::PrepareRestart {
+            write: self.profile.finish(true),
+            output_mode,
+        }) {
             Ok(()) => {
                 self.pending = None;
                 self.restart_pending = true;
+                self.switching_display = output_mode.is_some();
             }
-            Err(_) => self.error = "无法重启软件，控制线程已退出".into(),
+            Err(_) => self.error = "控制线程已退出".into(),
         }
     }
 
@@ -2549,6 +2577,10 @@ impl Manager {
         }
     }
     fn monitor_guide(&mut self, ui: &mut egui::Ui) {
+        if self.monitors.iter().any(|monitor| monitor["hmd"] == true) {
+            ui.label("已检测到 Action75 HMD。选择这块屏幕即可直接输出壁纸。");
+            return;
+        }
         let dark = ui.visuals().dark_mode;
         let (fill, accent) = if dark {
             (
@@ -2738,6 +2770,21 @@ impl Manager {
         if self.setup_complete {
             return;
         }
+        if self.setup_monitor.is_none() {
+            let mut hmds = self.monitors.iter().filter(|monitor| {
+                monitor["hmd"] == true && monitor_ui::selection_key(monitor).is_some()
+            });
+            if let Some(hmd) = hmds.next()
+                && hmds.next().is_none()
+            {
+                self.setup_monitor = Some(hmd.clone());
+            }
+        }
+        if self.setup_device.is_empty()
+            && setup_keyboard_connected(&self.devices, "VID_1CA6&PID_1A0B")
+        {
+            self.setup_device = "VID_1CA6&PID_1A0B".into();
+        }
         egui::Modal::new(egui::Id::new("first-run-setup")).show(ctx, |ui| {
             ui.set_width(440.);
             ui.heading("连接 Action75");
@@ -2817,10 +2864,14 @@ impl Manager {
     fn calibration_page(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("键位校准").font(ui_style::display_font(32.)));
         ui.add_space(23.);
+        if self.switching_display {
+            ui.disable();
+        }
         self.calibration.show_page(ui, &self.status, &self.monitors);
     }
     fn can_game_compat(&self) -> bool {
         !self.wallpaper_selection_blocked()
+            && !self.switching_display
             && !self.wallpaper_import.busy()
             && !self.restart_pending
             && !self.gpu_save_pending
@@ -2864,6 +2915,20 @@ impl Manager {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
+    fn switch_display_mode(&mut self, hmd: bool) {
+        if !self.can_switch_display() || action75_output_mode(&self.monitors) != Some(!hmd)
+        {
+            return;
+        }
+        self.prepare_restart(Some(hmd));
+    }
+
+    fn can_switch_display(&self) -> bool {
+        self.can_install_update() && !self.calibration.has_session() && self.profile_save_error.is_none()
+            && self.compat.is_none() && self.status["running"] == true
+            && self.status["monitorConnected"] == true
+    }
+
     fn devices_page(&mut self, ui: &mut egui::Ui) {
         if self.compat.is_some() {
             ui.disable();
@@ -2887,39 +2952,42 @@ impl Manager {
             }
             ui.add_space(14.);
 
-            if let (_, Some(request)) = exclusive_ui::show(ui, &mut self.exclusive) {
-                if self
-                    .tx
-                    .send(Job::SetExclusive {
-                        generation: request.generation,
-                        request: request.json(),
-                    })
-                    .is_err()
-                {
-                    self.exclusive
-                        .fail(request.generation, "控制线程已退出".into());
+            let hmd = self.status["hmdSelected"] == true;
+            if !hmd {
+                if let (_, Some(request)) = exclusive_ui::show(ui, &mut self.exclusive) {
+                    if self
+                        .tx
+                        .send(Job::SetExclusive {
+                            generation: request.generation,
+                            request: request.json(),
+                        })
+                        .is_err()
+                    {
+                        self.exclusive
+                            .fail(request.generation, "控制线程已退出".into());
+                    }
                 }
+                ui.label(
+                    RichText::new("开启并生效后，鼠标无法进入键盘副屏。校准时会暂时解除保护。")
+                        .small()
+                        .weak(),
+                );
+                let guard_error = if !self.exclusive.error.is_empty() {
+                    self.exclusive.error.as_str()
+                } else {
+                    self.status["displayGuardError"].as_str().unwrap_or("")
+                };
+                if !guard_error.trim().is_empty() {
+                    ui.colored_label(ui.visuals().error_fg_color, guard_error);
+                }
+                ui.add_space(14.);
             }
-            ui.label(
-                RichText::new("开启并生效后，鼠标无法进入键盘副屏。校准时会暂时解除保护。")
-                    .small()
-                    .weak(),
-            );
-            let guard_error = if !self.exclusive.error.is_empty() {
-                self.exclusive.error.as_str()
-            } else {
-                self.status["displayGuardError"].as_str().unwrap_or("")
-            };
-            if !guard_error.trim().is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, guard_error);
-            }
-            ui.add_space(14.);
 
             let requested = self.status["hideKeyboardTaskbar"].as_bool();
             let mut hide_taskbar = requested.unwrap_or(false);
             if ui
                 .add_enabled(
-                    requested.is_some() && self.status["running"] == true,
+                    !hmd && requested.is_some() && self.status["running"] == true,
                     egui::Checkbox::new(&mut hide_taskbar, "隐藏键盘副屏任务栏"),
                 )
                 .changed()
@@ -2951,9 +3019,22 @@ impl Manager {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
                 for m in self.monitors.clone() {
-                    if monitor_ui::show(ui, &m).clicked() {
+                    if ui.add_enabled_ui(!self.switching_display, |ui| monitor_ui::show(ui, &m)).inner.clicked() {
                         self.select_monitor(m);
                     }
+                }
+                if self.switching_display {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("正在切换 Action75 输出模式…");
+                    });
+                } else if let Some(hmd) = action75_output_mode(&self.monitors) {
+                    ui.add_space(8.);
+                    let label = if hmd { "切回普通扩展" } else { "切换到 HMD 独占" };
+                    if ui.add_enabled(self.can_switch_display(), egui::Button::new(label)).clicked() {
+                        self.switch_display_mode(!hmd);
+                    }
+                    ui.label(RichText::new("需要管理员权限。控制台会自动重开，主屏可能短暂黑屏。").small().weak());
                 }
                 ui.add_space(20.);
                 ui.separator();
@@ -2982,6 +3063,20 @@ impl Manager {
         }
     }
 }
+
+fn action75_output_mode(monitors: &[Value]) -> Option<bool> {
+    let mut matches = monitors.iter().filter(|monitor| {
+        monitor["monitorIdentity"].as_str().is_some_and(|id| {
+            id.to_ascii_uppercase().starts_with(r"\\?\DISPLAY#HIV1230#")
+        })
+    });
+    let monitor = matches.next()?;
+    if matches.next().is_some() || monitor["selected"] != true || monitor["primary"] == true {
+        return None;
+    }
+    monitor["hmd"].as_bool()
+}
+
 impl eframe::App for Manager {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
         // Covers are at most 480×180. Use a narrower atlas for the same rasterized glyphs.
@@ -3254,7 +3349,7 @@ impl eframe::App for Manager {
     }
     fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
         self.calibration.shutdown();
-        if self.compat_replaced || self.restart_on_exit.get() == Restart::Graphics {
+        if self.compat_replaced || matches!(self.restart_on_exit.get(), Restart::Graphics | Restart::OutputMode(_)) {
             // The handoff or restart has already settled the profile writes.
             let _ = self.tx.send(Job::Quit);
             return;
@@ -3271,6 +3366,33 @@ impl eframe::App for Manager {
 #[cfg(test)]
 mod manager_tests {
     use super::*;
+
+    #[test]
+    fn action75_output_switch_prepares_both_directions_and_reopens_the_controller() {
+        let (mut manager, events, jobs) = fixture();
+        manager.status = json!({"running":true, "monitorConnected":true});
+        let display = json!({
+            "monitorIdentity": r"\\?\display#hiv1230#instance#{class}",
+            "selected": true,
+            "hmd": false,
+        });
+        manager.monitors = vec![display.clone()];
+        manager.switch_display_mode(true);
+        assert!(matches!(jobs.try_recv(), Ok(Job::PrepareRestart { output_mode: Some(true), .. })));
+        assert!(manager.switching_display);
+        manager.switch_display_mode(true);
+        assert!(jobs.try_recv().is_err());
+        events.send(Event::RestartPrepared { output_mode: Some(true), result: Ok(()) }).unwrap();
+        manager.events(&egui::Context::default());
+        assert_eq!(manager.restart_on_exit.get(), Restart::OutputMode(true));
+        let (mut manager, _, jobs) = fixture();
+        manager.status = json!({"running":true, "monitorConnected":true});
+        manager.monitors = vec![display.clone()];
+        manager.monitors[0]["hmd"] = json!(true);
+        manager.switch_display_mode(false);
+        assert!(matches!(jobs.try_recv(), Ok(Job::PrepareRestart { output_mode: Some(false), .. })));
+        assert_eq!(action75_output_mode(&[display.clone(), display]), None);
+    }
 
     #[test]
     fn first_run_refresh_disables_a_missing_keyboard_and_accepts_it_after_reconnection() {
