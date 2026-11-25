@@ -17,6 +17,10 @@ use std::{
 };
 
 const DEFAULT_REPO: &str = "blackwhite-poi/Action75-Wallpaper";
+#[cfg(not(feature = "update-qa"))]
+const GITEE_REPO: &str = "black_and_white_poi/Action75-Wallpaper";
+#[cfg(not(feature = "update-qa"))]
+const GITEE_MANIFEST: &str = "Action75-Wallpaper-Update.json";
 const METADATA_LIMIT: u64 = 2 * 1024 * 1024;
 const ASSET_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 const TEMP_PREFIX: &str = "Action75-update-";
@@ -27,6 +31,8 @@ pub struct Release {
     name: String,
     #[cfg(not(feature = "update-qa"))]
     url: String,
+    #[cfg(not(feature = "update-qa"))]
+    mirror_url: Option<String>,
     size: u64,
     digest: [u8; 32],
 }
@@ -65,21 +71,25 @@ fn repository() -> Result<&'static str, String> {
     }
 }
 
+fn newer_version<'a>(tag: &'a str, installed: &str) -> Result<Option<&'a str>, String> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let next = Version::parse(version).map_err(|_| "官方发布标签不是有效版本号")?;
+    let current = Version::parse(installed).map_err(|_| "当前软件版本号无效")?;
+    if !next.pre.is_empty() || !next.build.is_empty() || !next.cmp_precedence(&current).is_gt() {
+        return Ok(None);
+    }
+    Ok(Some(version))
+}
+
 fn select(metadata: &[u8], repo: &str, installed: &str) -> Result<Option<Release>, String> {
     let release: GithubRelease =
         serde_json::from_slice(metadata).map_err(|_| "官方发布信息格式无效")?;
     if release.draft || release.prerelease {
         return Ok(None);
     }
-    let version = release
-        .tag_name
-        .strip_prefix('v')
-        .unwrap_or(&release.tag_name);
-    let next = Version::parse(version).map_err(|_| "官方发布标签不是有效版本号")?;
-    let current = Version::parse(installed).map_err(|_| "当前软件版本号无效")?;
-    if !next.pre.is_empty() || !next.build.is_empty() || !next.cmp_precedence(&current).is_gt() {
+    let Some(version) = newer_version(&release.tag_name, installed)? else {
         return Ok(None);
-    }
+    };
     let name = format!("Action75-Wallpaper-Setup-{version}-x64.exe");
     let mut matching = release.assets.iter().filter(|a| a.name == name);
     let asset = matching.next().ok_or("该版本缺少 Windows x64 安装包")?;
@@ -97,9 +107,21 @@ fn select(metadata: &[u8], repo: &str, installed: &str) -> Result<Option<Release
     if asset.browser_download_url.as_deref() != Some(&url) {
         return Err("安装包地址与官方仓库不符".into());
     }
-    let hex = asset
-        .digest
-        .as_deref()
+    let digest = parse_digest(asset.digest.as_deref())?;
+    Ok(Some(Release {
+        version: version.to_owned(),
+        #[cfg(not(feature = "update-qa"))]
+        mirror_url: (repo == DEFAULT_REPO).then(|| gitee_release_url(&release.tag_name, &name)),
+        name,
+        #[cfg(not(feature = "update-qa"))]
+        url,
+        size,
+        digest,
+    }))
+}
+
+fn parse_digest(value: Option<&str>) -> Result<[u8; 32], String> {
+    let hex = value
         .and_then(|s| s.strip_prefix("sha256:"))
         .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or("官方发布缺少有效的 SHA-256 校验值")?;
@@ -107,14 +129,7 @@ fn select(metadata: &[u8], repo: &str, installed: &str) -> Result<Option<Release
     for (i, byte) in digest.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| "SHA-256 校验值无效")?;
     }
-    Ok(Some(Release {
-        version: version.to_owned(),
-        name,
-        #[cfg(not(feature = "update-qa"))]
-        url,
-        size,
-        digest,
-    }))
+    Ok(digest)
 }
 
 #[cfg(not(feature = "update-qa"))]
@@ -133,7 +148,7 @@ fn client(timeout: Duration) -> Result<Client, String> {
 fn status_error(code: u16) -> String {
     match code {
         404 => "官方发布尚不可用（仓库或发行版不存在）".into(),
-        403 | 429 => "GitHub 暂时限制请求，请稍后重试".into(),
+        403 | 429 => "官方更新服务暂时限制请求，请稍后重试".into(),
         _ => format!("官方更新服务返回 HTTP {code}"),
     }
 }
@@ -161,26 +176,118 @@ fn fixture() -> Result<PathBuf, String> {
 pub fn check() -> Result<Option<Release>, String> {
     cleanup_downloads();
     let repo = repository()?;
+    let installed = env!("CARGO_PKG_VERSION");
     #[cfg(feature = "update-qa")]
-    let bytes = read_metadata(
-        fs::File::open(fixture()?.join("release.json")).map_err(|_| "读取测试发行信息失败")?,
-    )?;
+    {
+        let bytes = read_metadata(
+            fs::File::open(fixture()?.join("release.json")).map_err(|_| "读取测试发行信息失败")?,
+        )?;
+        select(&bytes, repo, installed)
+    }
     #[cfg(not(feature = "update-qa"))]
-    let bytes = {
-        let response = client(Duration::from_secs(25))?
+    {
+        let client = client(Duration::from_secs(25))?;
+        let github = client
             .get(format!(
                 "https://api.github.com/repos/{repo}/releases/latest"
             ))
             .header(ACCEPT, "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
-            .map_err(|_| "无法连接官方更新服务")?;
-        if response.status().as_u16() != 200 {
-            return Err(status_error(response.status().as_u16()));
+            .map_err(|_| "无法连接 GitHub 更新服务".to_owned())
+            .and_then(read_release_response);
+        match github {
+            Ok(bytes) => select(&bytes, repo, installed),
+            Err(error) if repo == DEFAULT_REPO => match check_gitee(&client, installed) {
+                Ok(Some(release)) => Ok(Some(release)),
+                Ok(None) => Err(format!("{error}；Gitee 镜像暂未发现比当前版本更新的安装包")),
+                Err(mirror) => Err(format!("{error}；Gitee 镜像：{mirror}")),
+            },
+            Err(error) => Err(error),
         }
-        read_metadata(response)?
+    }
+}
+
+#[cfg(not(feature = "update-qa"))]
+fn read_release_response(response: Response) -> Result<Vec<u8>, String> {
+    if response.status().as_u16() != 200 {
+        return Err(status_error(response.status().as_u16()));
+    }
+    read_metadata(response)
+}
+
+#[cfg(not(feature = "update-qa"))]
+fn gitee_release_url(tag: &str, name: &str) -> String {
+    format!("https://gitee.com/{GITEE_REPO}/releases/download/{tag}/{name}")
+}
+
+#[cfg(not(feature = "update-qa"))]
+#[derive(Deserialize)]
+struct GiteeManifest {
+    tag_name: String,
+    size: u64,
+    digest: String,
+}
+
+#[cfg(not(feature = "update-qa"))]
+fn select_gitee(metadata: &[u8], tag: &str, version: &str) -> Result<Release, String> {
+    let manifest: GiteeManifest =
+        serde_json::from_slice(metadata).map_err(|_| "镜像校验清单格式无效")?;
+    if manifest.tag_name != tag || !(1..=ASSET_LIMIT).contains(&manifest.size) {
+        return Err("镜像校验清单与正式版本不符".into());
+    }
+    let name = format!("Action75-Wallpaper-Setup-{version}-x64.exe");
+    Ok(Release {
+        version: version.to_owned(),
+        url: gitee_release_url(tag, &name),
+        mirror_url: None,
+        name,
+        size: manifest.size,
+        digest: parse_digest(Some(&manifest.digest))?,
+    })
+}
+
+#[cfg(not(feature = "update-qa"))]
+fn check_gitee(client: &Client, installed: &str) -> Result<Option<Release>, String> {
+    #[derive(Deserialize)]
+    struct MirrorRelease {
+        tag_name: String,
+        prerelease: bool,
+        assets: Vec<Asset>,
+    }
+    let bytes = read_release_response(
+        client
+            .get(format!(
+                "https://gitee.com/api/v5/repos/{GITEE_REPO}/releases/latest"
+            ))
+            .send()
+            .map_err(|_| "无法连接更新服务")?,
+    )?;
+    let latest: MirrorRelease = serde_json::from_slice(&bytes).map_err(|_| "发布信息格式无效")?;
+    if latest.prerelease {
+        return Ok(None);
+    }
+    let Some(version) = newer_version(&latest.tag_name, installed)? else {
+        return Ok(None);
     };
-    select(&bytes, repo, env!("CARGO_PKG_VERSION"))
+    let manifest_url = gitee_release_url(&latest.tag_name, GITEE_MANIFEST);
+    let has_asset = |name: &str, url: &str| {
+        let mut matches = latest.assets.iter().filter(|asset| asset.name == name);
+        matches
+            .next()
+            .and_then(|asset| asset.browser_download_url.as_deref())
+            == Some(url)
+            && matches.next().is_none()
+    };
+    if !has_asset(GITEE_MANIFEST, &manifest_url) {
+        return Err("镜像尚未上传该版本的校验清单".into());
+    }
+    let installer = format!("Action75-Wallpaper-Setup-{version}-x64.exe");
+    if !has_asset(&installer, &gitee_release_url(&latest.tag_name, &installer)) {
+        return Err("镜像缺少该版本的正式安装包".into());
+    }
+    let response = request_asset(client, &manifest_url, None)?;
+    select_gitee(&read_metadata(response)?, &latest.tag_name, version).map(Some)
 }
 
 #[cfg(any(not(feature = "update-qa"), test))]
@@ -206,9 +313,35 @@ fn redirect_target(previous: &Url, location: &str) -> Result<Url, String> {
 }
 
 #[cfg(not(feature = "update-qa"))]
-fn request_asset(release: &Release) -> Result<Response, String> {
-    let client = client(Duration::from_secs(300))?;
-    let mut url = Url::parse(&release.url).map_err(|_| "官方安装包地址无效")?;
+fn gitee_redirect(previous: &Url, location: &str) -> Result<Url, String> {
+    let url = previous.join(location).map_err(|_| "镜像跳转地址无效")?;
+    let allowed = match url.host_str() {
+        Some("gitee.com") => url
+            .path()
+            .starts_with(&format!("/{GITEE_REPO}/attach_files/")),
+        Some("foruda.gitee.com") => url.path().starts_with("/attach_file/"),
+        _ => false,
+    };
+    if url.scheme() != "https"
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || !allowed
+    {
+        return Err("已阻止来自非官方地址的镜像跳转".into());
+    }
+    Ok(url)
+}
+
+#[cfg(not(feature = "update-qa"))]
+fn request_asset(client: &Client, source: &str, size: Option<u64>) -> Result<Response, String> {
+    let mut url = Url::parse(source).map_err(|_| "官方下载地址无效")?;
+    let redirect = if url.host_str() == Some("gitee.com") {
+        gitee_redirect
+    } else {
+        redirect_target
+    };
     for _ in 0..=4 {
         let response = client
             .get(url.clone())
@@ -218,7 +351,8 @@ fn request_asset(release: &Release) -> Result<Response, String> {
             200 => {
                 if response
                     .content_length()
-                    .is_some_and(|len| len != release.size)
+                    .zip(size)
+                    .is_some_and(|(len, expected)| len != expected)
                 {
                     return Err("安装包下载长度与官方信息不符".into());
                 }
@@ -230,7 +364,7 @@ fn request_asset(release: &Release) -> Result<Response, String> {
                     .get(LOCATION)
                     .and_then(|s| s.to_str().ok())
                     .ok_or("下载重定向地址缺失")?;
-                url = redirect_target(&url, location)?;
+                url = redirect(&url, location)?;
             }
             status => return Err(status_error(status)),
         }
@@ -318,11 +452,24 @@ pub fn download(release: &Release) -> Result<PathBuf, String> {
         return Err("安装包与所选版本不一致".into());
     }
     #[cfg(feature = "update-qa")]
-    let source =
-        fs::File::open(fixture()?.join(&release.name)).map_err(|_| "读取测试安装包失败")?;
+    {
+        let source =
+            fs::File::open(fixture()?.join(&release.name)).map_err(|_| "读取测试安装包失败")?;
+        save_verified(source, release, &std::env::temp_dir())
+    }
     #[cfg(not(feature = "update-qa"))]
-    let source = request_asset(release)?;
-    save_verified(source, release, &std::env::temp_dir())
+    {
+        let client = client(Duration::from_secs(300))?;
+        let download_from = |url| {
+            let source = request_asset(&client, url, Some(release.size))?;
+            save_verified(source, release, &std::env::temp_dir())
+        };
+        match (download_from(&release.url), release.mirror_url.as_deref()) {
+            (Err(error), Some(mirror)) => download_from(mirror)
+                .map_err(|mirror_error| format!("{error}；Gitee 镜像：{mirror_error}")),
+            (result, _) => result,
+        }
+    }
 }
 
 // The active installer may still hold its .exe open. Never remove recent files
@@ -438,6 +585,43 @@ mod tests {
             "https://objects.githubusercontent.com/a#fragment",
         ] {
             assert!(redirect_target(&origin, url).is_err(), "{url}");
+        }
+    }
+    #[cfg(not(feature = "update-qa"))]
+    #[test]
+    fn mirror_uses_only_the_official_release_and_verified_bytes() {
+        let github = inspect(&metadata("v0.4.0")).unwrap().unwrap();
+        let data = json!({
+            "tag_name": "v0.4.0", "size": 3,
+            "digest": format!("sha256:{:x}", Sha256::digest(b"abc")),
+        });
+        let bytes = serde_json::to_vec(&data).unwrap();
+        let mirror = select_gitee(&bytes, "v0.4.0", "0.4.0").unwrap();
+        assert_eq!(Some(&mirror.url), github.mirror_url.as_ref());
+        assert!(select_gitee(&bytes, "v0.4.1", "0.4.1").is_err());
+        assert!(verify_stream(&b"abd"[..], Vec::new(), &mirror).is_err());
+        assert!(verify_stream(&b"abc"[..], Vec::new(), &mirror).is_ok());
+        let origin = Url::parse(&mirror.url).unwrap();
+        assert!(
+            gitee_redirect(
+                &origin,
+                &format!("/{GITEE_REPO}/attach_files/1/download/a.exe")
+            )
+            .is_ok()
+        );
+        assert!(
+            gitee_redirect(
+                &origin,
+                "https://foruda.gitee.com/attach_file/1/a.exe?token=example"
+            )
+            .is_ok()
+        );
+        for target in [
+            "https://gitee.com/other/project/attach_files/1/download/a.exe",
+            "https://foruda.gitee.com.example.com/attach_file/1/a.exe",
+            "http://foruda.gitee.com/attach_file/1/a.exe",
+        ] {
+            assert!(gitee_redirect(&origin, target).is_err());
         }
     }
     #[test]

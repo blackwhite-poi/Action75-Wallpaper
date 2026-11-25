@@ -33,6 +33,8 @@ python tools/stage-native-wallpapers.py --sdk-output artifacts/author-builds --o
 
 本地打包会把正式安装器写入 `release/`。在 GitHub Actions 手动运行 Windows checks 后，也可从该次运行的 `action75-wallpaper-installer` 下载正式安装器。
 
+同步到 Gitee 时，在 GitHub 正式发布后运行 `python tools/prepare-gitee-update.py <安装包路径>`。工具用 GitHub 发行资产的大小和 SHA-256 核对本地安装包，并在同目录生成 `Action75-Wallpaper-Update.json`。把同一个 EXE 和这份清单上传到 Gitee 对应的正式发行标签。控制台在 GitHub 无法提供发布信息时从 Gitee 读取该清单，下载后仍校验长度与 SHA-256。
+
 首次构建需下载 Cargo 锁定依赖、nlohmann JSON 3.12.0 和 Effekseer 1.80.8；原生依赖下载有固定 SHA-256 校验。打包使用 Inno Setup 的命令行编译器 ISCC。可通过上面的 `-Compiler` 指定安装路径。
 内置壁纸均为 Windows x64 原生壁纸包。将 `wallpapers-native/<壁纸 ID>` 整个文件夹交给其他用户，即可通过控制台导入；设置、配色和图像资源随包交付。旧版用户保留同一壁纸 ID 和参数配置。
 
