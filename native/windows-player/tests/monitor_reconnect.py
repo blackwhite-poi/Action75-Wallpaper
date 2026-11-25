@@ -89,6 +89,8 @@ def exercise(binary, source, root, dx12, hardware):
             check(selected["renderer"] == renderer, selected)
             worker = selected["nativeWorkerPid"]
             check(selected["monitorConnected"] and worker, selected)
+            unchanged = call("selectPack", id="afterimage" if dx12 else "black-hole", onlyIfEmpty=True)
+            check(unchanged["packId"] == pack and unchanged["nativeWorkerPid"] == worker, unchanged)
 
             resize_started = time.monotonic()
             failed = topology("keyboard-port-A", key=True, width=1600, height=600, failResizeOnce=True)

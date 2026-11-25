@@ -95,6 +95,20 @@ def exercise(root, layout, presentation):
                 check_taskbars(True)
                 def opacity(value,fail=False):
                     return call("setPackSettings",fail=fail,id="tidal-signal",values={"desktop":value})
+                def check_session_lock(surface):
+                    win.post(host,0x02B1,7,0)  # WM_WTSSESSION_CHANGE / WTS_SESSION_LOCK
+                    win.wait_for(lambda:not call("status")["outputReady"],"locked output")
+                    assert not win.visible(host) and not win.visible(surface)
+                    check_taskbars(False)
+                    # Display changes while locked must not re-show either window.
+                    locked=call("testMonitor",device="A",width=640,height=360,firstKey=True)
+                    assert not locked["outputReady"] and locked["keyHandle"]<0
+                    assert not win.visible(host) and not win.visible(surface)
+                    win.post(host,0x02B1,8,0)  # WTS_SESSION_UNLOCK
+                    ready=win.wait_for(lambda:win.visible(surface) and call("status"),"unlocked output")
+                    assert ready["outputReady"] and ready["nativeWorkerPid"]==worker,ready
+                    check_taskbars(True)
+                check_session_lock(host)
                 if presentation=="shared":
                     opacity(50,True)
                     assert call("getPackSettings",id="tidal-signal")["values"]["desktop"]==100
@@ -116,6 +130,7 @@ def exercise(root, layout, presentation):
                             a,b=W.RECT(),W.RECT()
                             assert bounds(host,C.byref(a)) and bounds(layers[0],C.byref(b)) and bytes(a)==bytes(b)
                     old_layer=child(parent_window,"Action75DesktopSurface")[0]
+                    check_session_lock(old_layer)
                     with process([fixture,"foreign"],root,name):
                         win.wait_for(lambda:any(get_prop(w,"Action75ReorderComplete") for w in child(parent_window,"Static")),
                                      "separate process completing its z-order change")

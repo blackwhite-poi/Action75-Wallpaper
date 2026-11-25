@@ -629,8 +629,8 @@ pub fn worker(
                 } => {
                     let result = (|| {
                         let mut preferences = storage::Preferences::load_checked(&root)?;
-                        start_player(&root)?;
-                        configure_first_run(
+                        start_player(&root).map_err(|error| format!("启动播放器失败：{error}"))?;
+                        let playback = configure_first_run(
                             &monitor,
                             monitor_identity.as_deref(),
                             &device,
@@ -639,11 +639,19 @@ pub fn worker(
                         preferences.setup_complete = true;
                         preferences.save(&root)?;
                         storage::log(&root, "INFO", "首次设置完成");
-                        Ok::<(), String>(())
+                        Ok::<Value, String>(playback)
                     })()
                     .inspect_err(|error| storage::log(&root, "ERROR", error));
-                    let _ = reply.send(Event::SetupFinished(result));
+                    let _ = reply.send(Event::SetupFinished(
+                        result.as_ref().map(|_| ()).map_err(Clone::clone),
+                    ));
                     repaint.request_repaint();
+                    if let Ok(playback) = result
+                        && playback["packId"].as_str() == Some("")
+                        && let Err(error) = load_first_run_wallpaper(&root, &playback)
+                    {
+                        storage::log(&root, "WARN", &format!("默认壁纸未能加载：{error}"));
+                    }
                     // Setup canceled any pending scan; complete its replacement
                     // even when setup failed, without acknowledging another job.
                     full(&root)
@@ -1315,7 +1323,7 @@ fn configure_first_run(
     monitor_identity: Option<&str>,
     device: &str,
     mut request: impl FnMut(Value) -> Result<Value, String>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     let mut settings = json!({"monitorDevice":monitor,"deviceGroup":device,"fps":60});
     if let Some(identity) = monitor_identity {
         settings["monitorIdentity"] = json!(identity);
@@ -1324,17 +1332,35 @@ fn configure_first_run(
         "action":"setSettings",
         "settings":settings,
         "requireConnectedKeyboard":true
-    }))?;
+    }))
+    .map_err(|error| format!("应用副屏和键盘设置失败：{error}"))?;
     if applied["selectedKeyboardDevices"].as_u64() == Some(0) {
         return Err("所选键盘已断开，请连接后刷新设备，或选择其他键盘。".into());
     }
-    if applied["packId"].as_str().is_none_or(str::is_empty)
-        && request(json!({"action":"selectPack","id":"paintball-native"})).is_err()
-    {
-        // A missing default wallpaper must still allow access to the library.
-        let _ = request(json!({"action":"selectPack","id":"black-hole"}));
+    request(json!({"action":"show"})).map_err(|error| format!("开启副屏播放失败：{error}"))
+}
+
+fn load_first_run_wallpaper(root: &Path, playback: &Value) -> Result<(), String> {
+    let pid = playback["playerPid"]
+        .as_u64()
+        .ok_or("播放器未报告进程 ID")?;
+    let select = |id| {
+        command_timeout(
+            root,
+            json!({"action":"selectPack","id":id,"onlyIfEmpty":true,"expectedPlayerPid":pid}),
+            Duration::from_secs(12),
+        )
+    };
+    if let Err(error) = select("paintball-native") {
+        // A timed-out selection may still have succeeded. Only fall back after
+        // the same player has replied and confirmed it has no active wallpaper.
+        let observed = command(root, json!({"action":"status","expectedPlayerPid":pid}))
+            .map_err(|reason| format!("{error}。无法确认播放器状态：{reason}"))?;
+        if observed["packId"].as_str() == Some("") {
+            select("black-hole")
+                .map_err(|fallback| format!("{error}。加载备用壁纸失败：{fallback}"))?;
+        }
     }
-    request(json!({"action":"show"}))?;
     Ok(())
 }
 
@@ -1796,28 +1822,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn setup_preserves_playback_and_can_finish_without_default_wallpapers() {
+    fn setup_finishes_without_waiting_for_the_default_wallpaper() {
         for active in ["black-hole", ""] {
             let mut actions = Vec::new();
-            configure_first_run("display", Some("identity"), "keyboard", |request| {
-                let action = request["action"].as_str().unwrap().to_owned();
-                let result = match action.as_str() {
-                    "setSettings" => Ok(json!({"selectedKeyboardDevices": 1, "packId": active})),
-                    "selectPack" => Err("missing bundled wallpaper".into()),
-                    "show" => Ok(Value::Null),
-                    _ => panic!("unexpected request"),
-                };
-                actions.push(action);
-                result
-            })
-            .unwrap();
-            let expected: &[&str] = if active.is_empty() {
-                &["setSettings", "selectPack", "selectPack", "show"]
-            } else {
-                &["setSettings", "show"]
-            };
-            assert_eq!(actions, expected);
+            let playback =
+                configure_first_run("display", Some("identity"), "keyboard", |request| {
+                    let action = request["action"].as_str().unwrap().to_owned();
+                    let result = match action.as_str() {
+                        "setSettings" => {
+                            Ok(json!({"selectedKeyboardDevices": 1, "packId": active}))
+                        }
+                        "show" => Ok(json!({"packId": active})),
+                        _ => panic!("unexpected request"),
+                    };
+                    actions.push(action);
+                    result
+                })
+                .unwrap();
+            assert_eq!(actions, ["setSettings", "show"]);
+            assert_eq!(playback["packId"], active);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn setup_acknowledges_before_a_slow_default_wallpaper_replies() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("data")).unwrap();
+        let pid = std::process::id();
+        let empty = json!({"running":true,"runtimeRoot":root.path(),"playerPid":pid,"packId":""});
+        let ok = |result: Value| Some(json!({"ok":true,"result":result}));
+        let (loading, started) = mpsc::channel();
+        let (allow_reply, release_reply) = mpsc::channel();
+        let server = pipe_client::test_server::spawn_script(
+            runtime_identity::installation_endpoint(root.path()).unwrap(),
+            vec![
+                ok(empty.clone()),
+                ok(json!({"selectedKeyboardDevices":1})),
+                ok(empty),
+                ok(json!({"packId":"paintball-native"})),
+                Some(json!({"ok":false,"error":"fixture finished"})),
+            ],
+            move |request| {
+                if request["action"] == "selectPack" {
+                    loading.send(()).unwrap();
+                    release_reply.recv_timeout(Duration::from_secs(4)).unwrap();
+                    thread::sleep(Duration::from_millis(6300));
+                }
+            },
+        );
+        let (jobs, events) = worker(root.path().to_owned(), eframe::egui::Context::default());
+        jobs.send(Job::Setup {
+            monitor: "display".into(),
+            monitor_identity: Some("identity".into()),
+            device: "keyboard".into(),
+        })
+        .unwrap();
+        started.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Event::SetupFinished(Ok(()))
+        ));
+        assert!(
+            storage::Preferences::load_checked(root.path())
+                .unwrap()
+                .setup_complete
+        );
+        allow_reply.send(()).unwrap();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(10)).unwrap(),
+            Event::Full { .. }
+        ));
+        jobs.send(Job::Quit).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests[3]["onlyIfEmpty"], true);
+        assert_eq!(requests[3]["expectedPlayerPid"], pid);
     }
 
     #[test]
@@ -2436,7 +2515,7 @@ mod tests {
         };
         assert_eq!(
             submit(&mut requests, None).unwrap_err(),
-            "keyboard is offline"
+            "应用副屏和键盘设置失败：keyboard is offline"
         );
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["requireConnectedKeyboard"], true);
@@ -2447,8 +2526,8 @@ mod tests {
         assert_eq!(requests.len(), 1);
 
         submit(&mut requests, Some(1)).unwrap();
-        assert_eq!(requests[1]["action"], "selectPack");
-        assert_eq!(requests[2]["action"], "show");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["action"], "show");
     }
 
     #[test]

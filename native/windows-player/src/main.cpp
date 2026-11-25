@@ -49,6 +49,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <wincodec.h>
+#include <wtsapi32.h>
 #include <cwctype>
 
 namespace fs = std::filesystem;
@@ -556,7 +557,8 @@ private:
     return renderer_.deviceLost() || (scene_.plugin && scene_.plugin->compositionDeviceLost());
   }
   bool outputReady() const {
-    return hasMonitor_ && !graphicsSuspended_ && !outputRetryAt_ && renderer_.hasRenderTarget();
+    return !sessionLocked_ && hasMonitor_ && !graphicsSuspended_ && !outputRetryAt_ &&
+           renderer_.hasRenderTarget();
   }
   int handleKey(const KeyEvent &event);
   bool resizeOutput(unsigned width, unsigned height, std::string &error);
@@ -649,6 +651,7 @@ private:
   NOTIFYICONDATAW tray_{};
   TrayMenu *activeTrayMenu_ = nullptr;
   bool exitShortcut_ = false, quittingSession_ = false;
+  bool sessionLocked_ = false, sessionNotifications_ = false;
   UINT taskbarCreated_ = 0;
   HICON icon_ = nullptr;
   bool hasMonitor_ = false, paused_ = false, visible_ = true, dirty_ = true;
@@ -1115,7 +1118,7 @@ bool Player::setDesktopMode(bool transparent,std::string &error) {
 }
 
 void Player::refreshDesktopLayer() {
-  if (!desktopActive_ || !hasMonitor_) return;
+  if (!desktopActive_ || !hasMonitor_ || sessionLocked_) return;
   std::string failure;
   if (!setDesktopMode(true,failure)) {
     error_=desktopError_=failure;
@@ -1219,8 +1222,9 @@ void Player::chooseMonitor(bool persistBinding, const std::vector<Monitor> &list
   hasMonitor_ = chosen != nullptr;
   monitorDevice_.clear();
   monitorError_.clear();
-  if (chosen) {
+  if (chosen)
     monitorDevice_ = utf8(chosen->device);
+  if (chosen && !sessionLocked_) {
     const bool bindingChanged = storedMonitorDevice_ != monitorDevice_ ||
                                 monitorIdentity_.path != chosen->identity.path ||
                                 (!chosen->identity.serial.empty() &&
@@ -1236,7 +1240,7 @@ void Player::chooseMonitor(bool persistBinding, const std::vector<Monitor> &list
         error_ = std::string("Display binding could not be saved: ") + exception.what();
       }
     }
-  } else if (!options_.headless) {
+  } else if (!chosen && !options_.headless) {
     monitorError_ = monitorIdentity_.empty() && !storedMonitorDevice_.empty()
                         ? "请重新选择键盘屏以确认原有显示设置。"
                         : "无法确认键盘屏，请重新连接或选择显示器。";
@@ -1343,7 +1347,7 @@ void Player::refreshDisplayGuard() {
   // suspends it.
   displayGuard_.configure(window_, wide(monitorDevice_), monitorIdentity_,
                           exclusiveDisplay_ && visible_ && !packId_.empty(),
-                          temporaryPauseOwner_ != nullptr || (hasMonitor_ && !outputReady()));
+                          sessionLocked_ || temporaryPauseOwner_ != nullptr || (hasMonitor_ && !outputReady()));
 }
 void Player::refreshKeyboardTaskbar() {
   RECT bounds{};
@@ -2046,6 +2050,8 @@ json Player::dispatch(const json &request) {
       stopEffects();
       result = status();
     } else if (action == "selectPack") {
+      if (request.value("onlyIfEmpty", false) && (!packId_.empty() || !preservedPackId_.empty()))
+        return {{"ok", true}, {"result", status()}};
       std::string error;
       if (!selectPack(request.at("id").get<std::string>(), error))
         throw std::runtime_error(error);
@@ -2464,6 +2470,20 @@ LRESULT Player::message(HWND h, UINT m, WPARAM w, LPARAM l) {
       refreshDesktopLayer();
     }
     return 0;
+  case WM_WTSSESSION_CHANGE:
+    if (sessionNotifications_ || (options_.headless && usesOutputWindow())) {
+      if (w == WTS_SESSION_LOCK && !sessionLocked_) {
+        sessionLocked_ = true;
+        // Hide both surfaces before the plugin or shell gets a chance to block.
+        ShowWindow(h, SW_HIDE);
+        desktopLayer_.show(false);
+        updateVisibility();
+      } else if (w == WTS_SESSION_UNLOCK && sessionLocked_) {
+        sessionLocked_ = false;
+        chooseMonitor(true);
+      }
+    }
+    return 0;
   case WM_DISPLAYCHANGE:
     chooseMonitor(true);
     return 0;
@@ -2571,6 +2591,8 @@ LRESULT Player::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     DestroyWindow(h);
     return 0;
   case WM_DESTROY:
+    if (sessionNotifications_)
+      WTSUnRegisterSessionNotification(h);
     desktopLayer_.reset();
     if (exitShortcut_) {
       UnregisterHotKey(h, ExitHotkey);
@@ -3037,8 +3059,23 @@ int Player::run() {
   if (!window_)
     throw std::runtime_error("Cannot create native output window");
   // The keyboard output fills its monitor without entering Explorer's full-screen mode.
-  if (!options_.headless)
+  if (!options_.headless) {
     SetPropW(window_, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+    sessionNotifications_ = WTSRegisterSessionNotification(window_, NOTIFY_FOR_THIS_SESSION) != FALSE;
+    if (sessionNotifications_) {
+      LPWSTR buffer = nullptr;
+      DWORD size = 0;
+      if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+                                      WTSSessionInfoEx, &buffer, &size)) {
+        const auto *state = reinterpret_cast<const WTSINFOEXW *>(buffer);
+        sessionLocked_ = size >= sizeof(*state) && state->Level == 1 &&
+                         state->Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_LOCK;
+        WTSFreeMemory(buffer);
+      }
+    } else {
+      diagnostics_.write("WARN", "Windows session notifications could not be registered");
+    }
+  }
   gpuPreference_ = requestedGpu(options_.root);
   const std::string requested = std::move(packId_);
   packId_.clear();
