@@ -174,6 +174,9 @@
       }
     }
   },
+  "fluid-pixel-cursor": {
+    "$include": "../../../wallpapers-native/fluid-pixel-cursor/settings.json"
+  },
   "folio": {
     "$include": "native-library.json#/panels/atlas",
     "$overrides": {
@@ -613,6 +616,9 @@
     ],
     "presentation": "layered"
   },
+  "patatap-custom-7535a978": {
+    "$include": "../../../wallpapers-native/patatap-custom-7535a978/settings.json"
+  },
   "silk-nebula": {
     "$include": "native-library.json#/panels/field",
     "$overrides": {
@@ -667,6 +673,9 @@
         "default": 0.15
       }
     }
+  },
+  "splash-cursor": {
+    "$include": "../../../wallpapers-native/splash-cursor/settings.json"
   },
   "stillwater": {
     "version": 1,
