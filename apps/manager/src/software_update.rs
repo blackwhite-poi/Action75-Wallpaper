@@ -195,9 +195,10 @@ pub fn check() -> Result<Option<Release>, String> {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .send()
             .map_err(|_| "无法连接 GitHub 更新服务".to_owned())
-            .and_then(read_release_response);
+            .and_then(read_release_response)
+            .and_then(|bytes| select(&bytes, repo, installed));
         match github {
-            Ok(bytes) => select(&bytes, repo, installed),
+            Ok(release) => Ok(release),
             Err(error) if repo == DEFAULT_REPO => match check_gitee(&client, installed) {
                 Ok(Some(release)) => Ok(Some(release)),
                 Ok(None) => Err(format!("{error}；Gitee 镜像暂未发现比当前版本更新的安装包")),
